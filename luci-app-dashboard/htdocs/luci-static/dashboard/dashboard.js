@@ -288,7 +288,8 @@
             if (sysTimeGlobal > 0) document.getElementById('sys-time').innerText = formatSysTime(++sysTimeGlobal);
         }, 1000);
 
-        function updateStaticInfo(net, sys) {
+        async function loadStaticInfo() {
+            const net = await apiRequest('netinfo');
             if (net) {
                 document.getElementById('wan-ip').innerText = net.wanIp || '-';
                 document.getElementById('lan-ip').innerText = net.lanIp || '-';
@@ -315,6 +316,7 @@
                 if(net.wanStatus === 'up') document.getElementById('wan-status-dot').classList.remove('hidden');
             }
 
+            const sys = await apiRequest('sysinfo');
             if (sys) {
                 document.getElementById('sys-model').innerText = sys.model || '-';
                 document.getElementById('sys-firmware').innerText = sys.firmware || '-';
@@ -340,7 +342,8 @@
             mb.className = `h-1.5 rounded-full transition-all duration-500 ${s.memUsage > 85 ? 'bg-red-500' : 'bg-green-500'}`;
         }
 
-        function updateDevices(devs) {
+        async function loadDevices() {
+            const devs = await apiRequest('devices');
             if (!devs) return;
             const activeCount = devs.filter(d => d.active).length;
             document.getElementById('active-device-count').innerText = activeCount;
@@ -405,7 +408,8 @@
         }
 
         let domainData = { top: [], recent: [], realtime: [] };
-        function updateDomains(res) {
+        async function loadDomains() {
+            const res = await apiRequest('domains');
             if (res) domainData = res;
             
             document.getElementById('domain-source').innerText = formatSourceLabel(domainData.source);
@@ -439,6 +443,8 @@
                     <div class="text-[10px] text-gray-400 font-mono">${item.count}</div>
                 </div>`).join('') || '<div class="text-center text-gray-400 text-xs mt-4">暂无实时域名数据</div>';
 
+            // 活跃域名刷新后，同步触发活跃应用的刷新
+            await loadActiveApps();
         }
 
         // 基于应用名称的图标映射（fallback：用于 domain-heuristic 模式下后端未提供 icon 时）
@@ -790,8 +796,9 @@
             return null;
         }
 
-        function updateActiveApps(databus) {
-            if (!databus) return;
+        async function loadActiveApps() {
+            // 活跃应用列表来自统一的 databus 接口
+            const databus = await apiRequest('databus');
             const appsElement = document.getElementById('active-apps-container');
             const cntElement = document.getElementById('app-count');
             const appState = pickActiveAppState(databus, null);
@@ -866,125 +873,46 @@
         const hasEcharts = typeof echarts !== 'undefined';
         const emptyChart = { setOption: function () {}, resize: function () {} };
         if (!hasEcharts) console.error('[Dashboard] echarts is not loaded.');
-
-        function isDashDark() {
-            const html = document.documentElement;
-            if (html.getAttribute('data-theme') === 'dark') return true;
-            if (html.classList && (html.classList.contains('dark') || html.classList.contains('theme-dark'))) return true;
-            const body = document.body;
-            if (body && body.classList && (body.classList.contains('dark') || body.classList.contains('theme-dark'))) return true;
-            try {
-                if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) return true;
-            } catch (e) {}
-            const metaBg = getComputedStyle(html).getPropertyValue('--dash-bg').trim();
-            if (metaBg === '#0b0d12' || metaBg.toLowerCase() === '#000000' || metaBg.startsWith('#0b')) return true;
-            return false;
-        }
-
-        function getTrafficChartOption(dark) {
-            const downColor = dark ? '#60a5fa' : '#3b82f6';
-            const upColor   = dark ? '#34d399' : '#10b981';
-            const axisColor = '#64748b';
-            const gridLine  = dark ? 'rgba(148,163,184,0.10)' : 'rgba(100,116,139,0.12)';
-            const axisLineColor = dark ? '#374151' : '#cbd5e1';
-            const legendColor = dark ? '#cbd5e1' : '#475569';
-            const panelBg = dark ? '#1a202c' : '#ffffff';
-            const panelBd = dark ? '#334155' : '#e2e8f0';
-            const labelColor = dark ? '#e2e8f0' : '#1e293b';
-            const metaColor = dark ? '#94a3b8' : '#64748b';
-            const valueColor = dark ? '#f1f5f9' : '#0f172a';
-
-            return {
-                tooltip: {
-                    show: true,
-                    trigger: 'axis',
-                    axisPointer: { type: 'line', lineStyle: { color: dark ? 'rgba(148,163,184,0.35)' : 'rgba(100,116,139,0.4)', type: 'solid', width: 1 } },
-                    confine: true,
-                    position: 'bottom',
-                    distance: 8,
-                    padding: [10, 14],
-                    backgroundColor: panelBg,
-                    borderColor: panelBd,
-                    borderWidth: 1,
-                    textStyle: { color: labelColor, fontSize: 13 },
-                    extraCssText: 'box-shadow: 0 4px 12px rgba(0,0,0,0.08); border-radius: 8px;',
-                    formatter: function (params) {
-                        if (!params || params.length === 0) return '';
-                        const t = params[0].axisValue;
-                        let html = `<div style="font-weight:600;margin-bottom:4px;color:${labelColor};font-size:13px;">${t}</div>`;
-                        params.forEach(x => {
-                            const lbl = x.seriesName === 'Down' ? '下载' : x.seriesName === 'Up' ? '上传' : x.seriesName;
-                            const arrow = x.seriesName === 'Down' ? '↓' : '↑';
-                            html += `<div style="display:flex;align-items:center;margin:2px 0;font-size:13px;">
-                                <span style="display:inline-block;margin-right:8px;width:9px;height:9px;border-radius:50%;background:${x.color};"></span>
-                                <span style="color:${metaColor};margin-right:10px;">${arrow}${lbl}:</span>
-                                <span style="font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:600;color:${valueColor};font-size:14px;">${formatBytes(x.value)}/s</span>
-                            </div>`;
-                        });
-                        return html;
-                    }
-                },
-                legend: {
-                    data: ['Down', 'Up'], top: 2, right: 4,
-                    itemWidth: 14, itemHeight: 14, itemGap: 20,
-                    textStyle: { color: legendColor, fontSize: 13, fontWeight: 500 }
-                },
-                grid: { left: '1%', right: '2%', bottom: '1%', top: '14%', containLabel: true },
-                xAxis: {
-                    type: 'category', boundaryGap: false, data: [],
-                    axisLine: { lineStyle: { color: axisLineColor } },
-                    axisLabel: { color: axisColor, fontSize: 12, margin: 10 }
-                },
-                yAxis: {
-                    type: 'value',
-                    axisLabel: { formatter: (v) => formatBytes(v) + '/s', fontSize: 12, color: axisColor, margin: 10 },
-                    splitLine: { lineStyle: { color: gridLine, type: 'solid' } }
-                },
-                series: [
-                    {
-                        name: 'Down', type: 'line', smooth: true, symbol: 'none',
-                        itemStyle: { color: downColor },
-                        areaStyle: {
-                            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                                { offset: 0, color: dark ? 'rgba(96, 165, 250, 0.28)' : 'rgba(59, 130, 246, 0.3)' },
-                                { offset: 1, color: 'rgba(59, 130, 246, 0.01)' }
-                            ])
-                        },
-                        data: []
-                    },
-                    {
-                        name: 'Up', type: 'line', smooth: true, symbol: 'none',
-                        itemStyle: { color: upColor },
-                        areaStyle: {
-                            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                                { offset: 0, color: dark ? 'rgba(52, 211, 153, 0.28)' : 'rgba(16, 185, 129, 0.3)' },
-                                { offset: 1, color: 'rgba(16, 185, 129, 0.01)' }
-                            ])
-                        },
-                        data: []
-                    }
-                ]
-            };
-        }
-
         const lineChart = hasEcharts ? echarts.init(document.getElementById('traffic-line-chart')) : emptyChart;
-        // notMerge: true 强制替换旧配置，确保 tooltip 样式生效
-        lineChart.setOption(getTrafficChartOption(isDashDark()), true);
+        lineChart.setOption({
+            tooltip: { trigger: 'axis', backgroundColor: 'rgba(255, 255, 255, 0.95)', textStyle: { color: '#1e293b' }, formatter: function (p) {
+                let r = `<div style="font-weight:bold;margin-bottom:4px;color:#475569;">${p[0].axisValue}</div>`;
+                p.forEach(x => { r += `<div style="display:flex;align-items:center;margin-top:2px;"><span style="display:inline-block;margin-right:5px;border-radius:10px;width:9px;height:9px;background-color:${x.color};"></span><span style="margin-right:12px;color:#64748b;">${x.seriesName}:</span><span style="font-family:monospace;font-weight:500;color:#1e293b;">${formatBytes(x.value)}/s</span></div>`; });
+                return r;
+            }}, 
+            legend: { data: ['Down', 'Up'], top: 0, itemWidth: 10, textStyle: { color: '#64748b' } },
+            grid: { left: '1%', right: '2%', bottom: '0%', top: '15%', containLabel: true },
+            xAxis: { type: 'category', boundaryGap: false, data: [], axisLine: { lineStyle: { color: '#cbd5e1' } }, axisLabel: { color: '#64748b' } },
+            yAxis: { type: 'value', axisLabel: { formatter: (v) => formatBytes(v) + '/s', fontSize: 9, color: '#64748b' }, splitLine: { lineStyle: { color: '#e2e8f0', type: 'dashed' } } },
+            series: [{ name: 'Down', type: 'line', smooth: true, symbol: 'none', itemStyle: { color: '#3b82f6' }, areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(59, 130, 246, 0.3)' }, { offset: 1, color: 'rgba(59, 130, 246, 0.01)' }]) }, data: [] },
+                     { name: 'Up', type: 'line', smooth: true, symbol: 'none', itemStyle: { color: '#10b981' }, areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(16, 185, 129, 0.3)' }, { offset: 1, color: 'rgba(16, 185, 129, 0.01)' }]) }, data: [] }]
+        });
 
-        // 主题切换时重新应用图表配色
-        (function observeDashTheme() {
-            const reapply = () => { if (hasEcharts) { lineChart.setOption(getTrafficChartOption(isDashDark()), true); } };
-            try { window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', reapply); } catch(e){}
-            new MutationObserver(reapply).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'class'] });
-        })();
+        // 初始化应用分布饼图 (ECharts)
+        const donutChart = hasEcharts ? echarts.init(document.getElementById('app-dist-chart')) : emptyChart;
+        donutChart.setOption({
+            tooltip: { trigger: 'item' },
+            color: ['#3b82f6', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6', '#cbd5e1'],
+            series: [{
+                name: '应用分布',
+                type: 'pie',
+                radius: ['55%', '85%'],
+                avoidLabelOverlap: false,
+                itemStyle: { borderRadius: 4, borderColor: '#fff', borderWidth: 2 },
+                label: { show: false, position: 'center' },
+                emphasis: { label: { show: true, fontSize: 18, fontWeight: 'bold', formatter: '{d}%' } },
+                labelLine: { show: false },
+                data: [{ value: 100, name: '等待应用统计数据' }]
+            }]
+        });
 
-        // 应用分布饼图已屏蔽（DOM 不存在）
-
-        window.addEventListener('resize', () => { lineChart.resize(); });
+        window.addEventListener('resize', () => { lineChart.resize(); donutChart.resize(); });
 
         let tD = [], dD = [], uD = [], trafficState = null;
-        function updateRealtime(sys, tr) {
-            if (sys) updateCpuMem(sys);
+        async function refresh() {
+            const sys = await apiRequest('sysinfo');
+            if(sys) updateCpuMem(sys);
+            const tr = await apiRequest('traffic');
             if (tr) {
                 const now = Date.now();
                 const sample = deriveTrafficSnapshot(tr, trafficState, now);
@@ -1021,74 +949,6 @@
         }
 
         initNavButtons();
-        // 统一轮询：每周期只发 1 次 /databus，全部切片从同一份响应里取
-        // 高频（每 2s）：流量/CPU/内存/域名/应用  低频（每 5 个周期=10s）：静态信息/设备列表
-        // pending 保证串行，上一轮未返回不发下一轮，避免请求堆积雪崩
-        (function startUnifiedPolling() {
-            let pending = false;
-            let tickCounter = 0;
-            const HIGH_FREQ_MS = 2000;
-            const LOW_FREQ_EVERY = 5; // 5 × 2s = 10s
-
-            async function fetchDatabus() {
-                const hostname = window.location.hostname || '';
-                const protocol = window.location.protocol || '';
-                const isLocalHtml = protocol === 'file:' || protocol === 'blob:' || hostname === 'localhost' || hostname === '' || hostname.includes('usercontent');
-                const isLuciEnv = window.location.pathname.includes('/admin/');
-                if (isLocalHtml && !isLuciEnv) return getMockData('databus');
-                const API_BASE = getApiBase();
-                const url = `${API_BASE}/databus?t=${Date.now()}`;
-                const res = await fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } });
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                const json = await res.json();
-                if (json && json.error) throw new Error(json.error);
-                return json;
-            }
-
-            function applyAllSlices(databus) {
-                const sys = extractDatabusEndpoint('sysinfo', databus);
-                const tr  = extractDatabusEndpoint('traffic', databus);
-                return { sys, tr };
-            }
-
-            async function pollOnce() {
-                if (pending) return;
-                pending = true;
-                try {
-                    const databus = await fetchDatabus();
-                    const { sys, tr } = applyAllSlices(databus);
-                    updateRealtime(sys, tr);                                        // 高频：流量 + CPU/内存
-
-                    // 每 5 个 tick（≈10s）更新一次低频数据（静态/设备，变化不频繁）
-                    if (tickCounter % LOW_FREQ_EVERY === 0) {
-                        updateStaticInfo(extractDatabusEndpoint('netinfo', databus), sys);
-                        updateDevices(extractDatabusEndpoint('devices', databus));
-                    }
-                } catch (e) {
-                    console.error('[Polling]', e.message);
-                } finally {
-                    pending = false;
-                    tickCounter++;
-                    setTimeout(pollOnce, HIGH_FREQ_MS);
-                }
-            }
-
-            // 首屏立即全量渲染一次，不等待低频计数器
-            (async function firstPaint() {
-                if (pending) return;
-                pending = true;
-                try {
-                    const databus = await fetchDatabus();
-                    const { sys, tr } = applyAllSlices(databus);
-                    updateStaticInfo(extractDatabusEndpoint('netinfo', databus), sys);
-                    updateDevices(extractDatabusEndpoint('devices', databus));
-                    updateRealtime(sys, tr);
-                } catch (e) {
-                    console.error('[First Paint]', e.message);
-                } finally {
-                    pending = false;
-                    tickCounter = 1;
-                    setTimeout(pollOnce, HIGH_FREQ_MS);
-                }
-            })();
-        })();
+        loadStaticInfo(); loadDevices(); loadDomains(); refresh();
+        setInterval(refresh, 2000); setInterval(loadDomains, 2000);
+        setInterval(loadStaticInfo, 10000); setInterval(loadDevices, 10000);

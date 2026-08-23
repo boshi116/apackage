@@ -71,7 +71,6 @@ char *strrchr(const char *s, int c);
 void *memset(void *s, int c, size_t n);
 char *strncat(char *dest, const char *src, size_t n);
 char *strcat(char *dest, const char *src);
-char *strdup(const char *s);
 
 /* 文件 I/O */
 FILE *fopen(const char *pathname, const char *mode);
@@ -554,10 +553,8 @@ static void append_network_status(struct buffer *b, const char *iface)
     char lan_ip[128] = "";
     char gateway[128] = "";
     char dns[128] = "";
-    char uptime_str[32] = "";
     char cmd[384];
     bool online = iface && iface[0];
-    unsigned long net_uptime = 0;
     /* 验证接口名格式：仅允许字母、数字、连字符、下划线和点 */
     if (online) {
         for (const char *p = iface; *p; p++) {
@@ -573,14 +570,6 @@ static void append_network_status(struct buffer *b, const char *iface)
         read_cmd(cmd, wan_ip, sizeof(wan_ip));
         snprintf(cmd, sizeof(cmd), "ip -6 addr show dev '%s' scope global 2>/dev/null | awk '/inet6 / {print $2; exit}' | cut -d/ -f1", iface);
         read_cmd(cmd, wan_ipv6, sizeof(wan_ipv6));
-        /* 通过 ubus 获取网络接口在线时长（秒） */
-        read_cmd("ubus call network.interface.wan status 2>/dev/null | jsonfilter -e @.uptime 2>/dev/null",
-                 uptime_str, sizeof(uptime_str));
-        char *p = uptime_str;
-        while (*p && isspace((unsigned char)*p)) p++;
-        if (*p) {
-            net_uptime = strtoul(p, NULL, 10);
-        }
     }
 
     read_cmd("ip -4 addr show dev br-lan 2>/dev/null | awk '/inet / {print $2; exit}' | cut -d/ -f1", lan_ip, sizeof(lan_ip));
@@ -601,7 +590,6 @@ static void append_network_status(struct buffer *b, const char *iface)
     json_string(b, online ? "default-route" : "no-default-route");
     buf_append(b, ",\"interface\":");
     json_string(b, iface ? iface : "");
-    buf_printf(b, ",\"uptime_raw\":%lu", net_uptime);
     buf_append(b, ",\"lan\":{\"ip\":");
     json_string(b, lan_ip);
     buf_append(b, ",\"dns\":[");
@@ -2407,25 +2395,6 @@ static void parse_command_lines(const char *cmd) {
     pclose(p);
 }
 
-static int count_domain_hits(void);
-
-/* 读取文件末尾指定行数，失败或文件不存在返回 0
- * 用 tail 命令反向 seek，避免逐行遍历大文件（性能优化） */
-static int parse_file_tail(const char *path, int max_lines) {
-    if (access(path, R_OK) != 0) return 0;
-    char cmd[256];
-    snprintf(cmd, sizeof(cmd), "tail -n %d '%s' 2>/dev/null", max_lines, path);
-    FILE *p = popen(cmd, "r");
-    if (!p) return 0;
-    int before = count_domain_hits();
-    char line[1024];
-    while (fgets(line, sizeof(line), p)) {
-        extract_and_record(line, 1);
-    }
-    pclose(p);
-    return count_domain_hits() > before ? 1 : 0;
-}
-
 static int cmp_domain_count(const void *a, const void *b) {
     const struct domain_node *na = *(const struct domain_node **)a;
     const struct domain_node *nb = *(const struct domain_node **)b;
@@ -2491,18 +2460,6 @@ static void append_source_label(char *dst, size_t dst_len, const char *label)
 
 static void parse_named_source(const char *label, const char *cmd, char *source, size_t source_len)
 {
-    /* 跳过文件不存在的 tail 命令，避免无意义 fork+exec */
-    if (strncmp(cmd, "tail", 4) == 0) {
-        const char *p = strstr(cmd, "/tmp/");
-        if (p) {
-            size_t n = strcspn(p, " '");
-            char path[128];
-            if (n >= sizeof(path)) n = sizeof(path) - 1;
-            memcpy(path, p, n);
-            path[n] = '\0';
-            if (access(path, R_OK) != 0) return;
-        }
-    }
     int before = count_domain_hits();
     parse_command_lines(cmd);
     if (count_domain_hits() > before) {
@@ -2511,11 +2468,178 @@ static void parse_named_source(const char *label, const char *cmd, char *source,
 }
 
 static void append_domains_and_apps(struct buffer *b) {
-    /* 应用/域名统计功能已屏蔽：不再执行任何采集命令（ubus/conntrack/logread/tail）
-     * 保留 JSON 输出结构以维持前端兼容性，所有数组返回空 */
-    buf_append(b, "\"domains\":{\"source\":\"disabled\",\"realtime_source\":\"disabled\",\"top\":[],\"recent\":[],\"realtime\":[]},\"realtime_urls\":{\"source\":\"disabled\",\"total\":0,\"list\":[]},");
-    buf_append(b, "\"online_apps\":{\"total\":0,\"list\":[],\"source\":\"disabled\"},");
-    buf_append(b, "\"app_recognition\":{\"available\":false,\"source\":\"disabled\",\"engine\":\"dashboard-core\",\"feature_version\":\"\",\"class_stats\":[]}");
+    char source[256] = "";
+    char realtime_source[64] = "none";
+    static bool feature_loaded = false;
+
+    if (!feature_loaded) {
+        load_feature_cfg();
+        feature_loaded = true;
+    }
+
+    g_seq = 0;
+    clear_hashes();
+
+    parse_named_source("appfilter", "ubus call appfilter visit_list 2>/dev/null", source, sizeof(source));
+    parse_named_source("dnsmasq-logread", "logread | grep -iE 'dnsmasq' | tail -n 12000", source, sizeof(source));
+
+    int before_conntrack = count_domain_hits();
+    parse_conntrack();
+    if (count_domain_hits() > before_conntrack) {
+        append_source_label(source, sizeof(source), "conntrack+dnsmasq");
+        snprintf(realtime_source, sizeof(realtime_source), "conntrack+dnsmasq");
+    }
+
+    parse_named_source("smartdns", "tail -n 6000 /tmp/smartdns.log 2>/dev/null", source, sizeof(source));
+    parse_named_source("adguardhome", "tail -n 6000 /tmp/AdGuardHome.log 2>/dev/null", source, sizeof(source));
+    parse_named_source("mosdns", "tail -n 6000 /tmp/mosdns.log 2>/dev/null", source, sizeof(source));
+    parse_named_source("openclash", "tail -n 6000 /tmp/openclash.log 2>/dev/null", source, sizeof(source));
+    parse_named_source("passwall", "tail -n 6000 /tmp/log/passwall.log 2>/dev/null", source, sizeof(source));
+    parse_named_source("passwall2", "tail -n 6000 /tmp/log/passwall2.log 2>/dev/null", source, sizeof(source));
+    parse_named_source("homeproxy", "tail -n 6000 /tmp/homeproxy.log 2>/dev/null", source, sizeof(source));
+    parse_named_source("mihomo", "tail -n 6000 /tmp/mihomo.log 2>/dev/null", source, sizeof(source));
+    parse_named_source("sing-box", "tail -n 6000 /tmp/sing-box.log 2>/dev/null", source, sizeof(source));
+    parse_named_source("logread-dns", "logread | grep -iE 'smartdns|adguardhome|mosdns|unbound|pdnsd|chinadns|openclash|passwall|mihomo|sing-box|homeproxy|appfilter' | tail -n 8000", source, sizeof(source));
+    if (source[0] == '\0') {
+        snprintf(source, sizeof(source), "none");
+    }
+
+    int g_all_domains_count = 0;
+    for (int i = 0; i < HASH_SIZE; i++) {
+        struct domain_node *node = domain_hash_table[i];
+        while (node) {
+            g_all_domains_count++;
+            node = node->next;
+        }
+    }
+
+    struct domain_node **g_all_domains = malloc(sizeof(struct domain_node *) * (g_all_domains_count + 1));
+    if (!g_all_domains) {
+        g_all_domains_count = 0;
+    }
+    int idx = 0;
+    if (g_all_domains) {
+        for (int i = 0; i < HASH_SIZE; i++) {
+            struct domain_node *node = domain_hash_table[i];
+            while (node) {
+                g_all_domains[idx++] = node;
+                node = node->next;
+            }
+        }
+    }
+
+    int g_all_realtime_count = count_realtime_rows();
+    struct realtime_node **g_all_realtime = NULL;
+    if (g_all_realtime_count > 0) {
+        g_all_realtime = malloc(sizeof(struct realtime_node *) * (size_t)g_all_realtime_count);
+        if (g_all_realtime) {
+            int ridx = 0;
+            for (int i = 0; i < HASH_SIZE; i++) {
+                struct realtime_node *node = realtime_hash_table[i];
+                while (node) {
+                    g_all_realtime[ridx++] = node;
+                    node = node->next;
+                }
+            }
+            qsort(g_all_realtime, g_all_realtime_count, sizeof(struct realtime_node *), cmp_realtime_count);
+        } else {
+            g_all_realtime_count = 0;
+        }
+    }
+
+    buf_append(b, "\"domains\":{\"source\":");
+    json_string(b, source);
+    buf_append(b, ",\"realtime_source\":");
+    json_string(b, realtime_source);
+    buf_append(b, ",\"top\":[");
+    qsort(g_all_domains, g_all_domains_count, sizeof(struct domain_node *), cmp_domain_count);
+    int top_count = g_all_domains_count > 25 ? 25 : g_all_domains_count;
+    for (int i = 0; i < top_count; i++) {
+        if (i > 0) buf_append(b, ",");
+        buf_append(b, "{");
+        json_key_string(b, "domain", g_all_domains[i]->domain);
+        buf_printf(b, ",\"count\":%d}", g_all_domains[i]->count);
+    }
+    buf_append(b, "],\"recent\":[");
+    qsort(g_all_domains, g_all_domains_count, sizeof(struct domain_node *), cmp_domain_recent);
+    int recent_count = g_all_domains_count > 25 ? 25 : g_all_domains_count;
+    for (int i = 0; i < recent_count; i++) {
+        if (i > 0) buf_append(b, ",");
+        buf_append(b, "{");
+        json_key_string(b, "domain", g_all_domains[i]->domain);
+        buf_printf(b, ",\"count\":%d}", g_all_domains[i]->count);
+    }
+    buf_append(b, "],\"realtime\":[");
+    int realtime_count = g_all_realtime_count > 25 ? 25 : g_all_realtime_count;
+    for (int i = 0; i < realtime_count; i++) {
+        if (i > 0) buf_append(b, ",");
+        buf_append(b, "{");
+        json_key_string(b, "domain", g_all_realtime[i]->domain);
+        buf_printf(b, ",\"count\":%d,\"devices\":%d}", g_all_realtime[i]->count, g_all_realtime[i]->devices);
+    }
+    buf_append(b, "]},\"realtime_urls\":{\"source\":");
+    json_string(b, realtime_source);
+    buf_printf(b, ",\"total\":%d,\"list\":[", realtime_count);
+    for (int i = 0; i < realtime_count; i++) {
+        if (i > 0) buf_append(b, ",");
+        buf_append(b, "{");
+        json_key_string(b, "domain", g_all_realtime[i]->domain);
+        buf_printf(b, ",\"count\":%d,\"hits\":%d,\"devices\":%d}", g_all_realtime[i]->count, g_all_realtime[i]->count, g_all_realtime[i]->devices);
+    }
+    buf_append(b, "]},");
+
+    free(g_all_domains);
+    free(g_all_realtime);
+
+    // Apps
+    int g_all_apps_count = 0;
+    for (int i = 0; i < HASH_SIZE; i++) {
+        struct app_node *node = app_hash_table[i];
+        while (node) {
+            g_all_apps_count++;
+            node = node->next;
+        }
+    }
+
+    struct app_node **g_all_apps = malloc(sizeof(struct app_node *) * (g_all_apps_count + 1));
+    if (!g_all_apps) {
+        g_all_apps_count = 0;
+    }
+    idx = 0;
+    if (g_all_apps) {
+        for (int i = 0; i < HASH_SIZE; i++) {
+            struct app_node *node = app_hash_table[i];
+            while (node) {
+                g_all_apps[idx++] = node;
+                node = node->next;
+            }
+        }
+    }
+
+    qsort(g_all_apps, g_all_apps_count, sizeof(struct app_node *), cmp_app_count);
+    int top_apps = g_all_apps_count > 12 ? 12 : g_all_apps_count;
+
+    buf_printf(b, "\"online_apps\":{\"total\":%d,\"list\":[", top_apps);
+    for (int i = 0; i < top_apps; i++) {
+        if (i > 0) buf_append(b, ",");
+        buf_append(b, "{");
+        json_key_string(b, "name", g_all_apps[i]->name);
+        buf_append(b, ",");
+        json_key_string(b, "class", g_all_apps[i]->class_name);
+        buf_append(b, ",");
+        json_key_string(b, "class_label", g_all_apps[i]->class_name);
+        buf_append(b, ",");
+        json_key_string(b, "source", "domain-heuristic");
+        buf_printf(b, ",\"hits\":%d,\"time\":%d,\"id\":%d}", g_all_apps[i]->hits, g_all_apps[i]->hits, i);
+    }
+    buf_append(b, "],\"source\":\"domain-heuristic\"},");
+
+    // app_recognition
+    buf_append(b, "\"app_recognition\":{\"available\":");
+    buf_append(b, top_apps > 0 ? "true" : "false");
+    buf_append(b, ",\"source\":\"domain-heuristic\",\"engine\":\"dashboard-core\",\"feature_version\":\"\",\"class_stats\":[]}");
+
+    free(g_all_apps);
 }
 
 

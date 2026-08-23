@@ -36,7 +36,7 @@ jobs:
       - name: Build LuCI package
         uses: openwrt/gh-action-sdk@main
         env:
-          ARCH: mediatek-filogic-25.12.5
+          ARCH: mediatek-filogic-24.10.5
           FEED_DIR: ${{ github.workspace }}/.feed
           PACKAGES: luci-app-dashboard
           NO_REFRESH_CHECK: true
@@ -48,17 +48,17 @@ jobs:
           rm -rf dist
           mkdir -p dist
 
-          echo "All built packages:"
-          find bin -type f \( -name '*.ipk' -o -name '*.apk' \) | sort
+          echo "All built IPKs:"
+          find bin -type f -name '*.ipk' | sort
 
-          app_pkg="$(find bin -type f \( -name 'luci-app-dashboard_*.ipk' -o -name 'luci-app-dashboard-*.apk' \) | sort | head -n 1)"
-          i18n_pkg="$(find bin -type f \( -name 'luci-i18n-dashboard-zh-cn_*.ipk' -o -name 'luci-i18n-dashboard-zh-cn-*.apk' \) | sort | head -n 1)"
+          app_ipk="$(find bin -type f -name 'luci-app-dashboard_*.ipk' | sort | head -n 1)"
+          i18n_ipk="$(find bin -type f -name 'luci-i18n-dashboard-zh-cn_*.ipk' | sort | head -n 1)"
 
-          test -n "$app_pkg" || (echo "Missing luci-app-dashboard package" && exit 1)
-          test -n "$i18n_pkg" || (echo "Missing luci-i18n-dashboard-zh-cn package" && exit 1)
+          test -n "$app_ipk" || (echo "Missing luci-app-dashboard ipk" && exit 1)
+          test -n "$i18n_ipk" || (echo "Missing luci-i18n-dashboard-zh-cn ipk" && exit 1)
 
-          cp -f "$app_pkg" dist/luci-app-dashboard.apk
-          cp -f "$i18n_pkg" dist/luci-i18n-dashboard-zh-cn.apk
+          cp -f "$app_ipk" dist/luci-app-dashboard.ipk
+          cp -f "$i18n_ipk" dist/luci-i18n-dashboard-zh-cn.ipk
           cp -f install.sh dist/install.sh
           chmod 755 dist/install.sh
 
@@ -79,9 +79,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # qualcommax IPQ60XX（JDCloud 等 aarch64_cortex-a53）
-          - sdk_arch: qualcommax-ipq60xx-25.12.5
-            aliases: "ipq60xx"
+          - sdk_arch: mediatek-filogic-24.10.5
+            aliases: ""
+          - sdk_arch: armsr-armv8-24.10.5
+            aliases: "aarch64 armv8"
+          - sdk_arch: armsr-armv7-24.10.5
+            aliases: "armv7"
+          - sdk_arch: x86-64-24.10.5
+            aliases: "x86"
 
     steps:
       - name: Checkout
@@ -112,130 +117,64 @@ jobs:
           rm -rf dist
           mkdir -p dist
 
-          echo "All built packages:"
-          find bin -type f \( -name '*.ipk' -o -name '*.apk' \) | sort
+          echo "All built IPKs:"
+          find bin -type f -name '*.ipk' | sort
 
-          core_pkg="$(find bin -type f \( -name 'dashboard-core_*.ipk' -o -name 'dashboard-core-*.apk' \) | sort | head -n 1)"
-          test -n "$core_pkg" || (echo "Missing dashboard-core package" && exit 1)
+          core_ipk="$(find bin -type f -name 'dashboard-core_*.ipk' | sort | head -n 1)"
+          test -n "$core_ipk" || (echo "Missing dashboard-core ipk" && exit 1)
 
-          pkg_ext="${core_pkg##*.}"
-          pkg_base="$(basename "$core_pkg" ."$pkg_ext")"
+          core_arch="$(basename "$core_ipk" .ipk | sed -E 's/^dashboard-core_[^_]+_(.+)$/\1/')"
+          test -n "$core_arch" || (echo "Cannot parse dashboard-core architecture from $core_ipk" && exit 1)
 
-          if [ "$pkg_ext" = "apk" ]; then
-            # APK 路径: bin/packages/<arch>/<feed>/dashboard-core-<version>.apk
-            # 架构信息在目录路径中，不在文件名中
-            core_arch="$(echo "$core_pkg" | sed -E 's|^bin/packages/([^/]+)/.*|\1|')"
-          else
-            # IPK 格式：dashboard-core_0.0.9-1_aarch64_cortex-a53.ipk
-            core_arch="$(echo "$pkg_base" | sed -E 's/^dashboard-core_[^_]+_(.+)$/\1/')"
-          fi
-          test -n "$core_arch" || (echo "Cannot parse dashboard-core architecture from $core_pkg" && exit 1)
-
-          cp -f "$core_pkg" "dist/dashboard-core-${core_arch}.${pkg_ext}"
+          cp -f "$core_ipk" "dist/dashboard-core-${core_arch}.ipk"
           core_out="dist/dashboard-core-${core_arch}"
+          core_tmp="$(mktemp -d)"
           extract_ok=0
-
-          if [ "$pkg_ext" = "apk" ]; then
-            # OpenWrt 25.12 APK 格式：ADBd 签名（apk-tools v3 自定义二进制格式）
-            # 不能用 tar/zstd 直接解，必须用 apk extract
-            echo "=== APK extraction ==="
-            echo "core_pkg: $core_pkg"
-            ls -la "$core_pkg"
-            file "$core_pkg"
-
-            # 方法1：系统有 apk 命令时，直接用 apk extract
-            if command -v apk >/dev/null 2>&1; then
-              echo "--- try: apk extract (host) ---"
-              extract_tmp="$(mktemp -d)"
-              (cd "$extract_tmp" && apk extract "$GITHUB_WORKSPACE/$core_pkg" 2>&1) || true
-              if [ -f "$extract_tmp/usr/bin/dashboard-core" ]; then
-                cp -f "$extract_tmp/usr/bin/dashboard-core" "$core_out"
-                extract_ok=1
-                echo "[shell] extracted via apk extract"
-              fi
-              rm -rf "$extract_tmp"
+          extract_from_tar() {
+            archive="$1"
+            entry="$(tar -tf "$archive" 2>/dev/null | grep -E '(^|/)usr/bin/dashboard-core$' | head -n 1 || true)"
+            if [ -z "$entry" ]; then
+              return 1
             fi
+            tar -xOf "$archive" "$entry" > "$core_out"
+          }
 
-            # 方法2：用 Docker + Alpine 的 apk extract（ADBd 格式需要 apk v3）
+          if ar t "$core_ipk" >/dev/null 2>&1; then
+            (
+              cd "$core_tmp"
+              ar x "$GITHUB_WORKSPACE/$core_ipk"
+            )
+            data_tar="$(find "$core_tmp" -maxdepth 1 -type f -name 'data.tar.*' | sort | head -n 1)"
+            if [ -n "$data_tar" ]; then
+              extract_from_tar "$data_tar" && extract_ok=1 || true
+            fi
+          fi
+
+          if [ "$extract_ok" -ne 1 ] && tar -tf "$core_ipk" >/dev/null 2>&1; then
+            data_entry="$(tar -tf "$core_ipk" | grep -E '(^|/)data\.tar\.' | head -n 1 || true)"
+            if [ -n "$data_entry" ]; then
+              data_archive="$core_tmp/$(basename "$data_entry")"
+              tar -xOf "$core_ipk" "$data_entry" > "$data_archive" || true
+              if [ -s "$data_archive" ]; then
+                extract_from_tar "$data_archive" && extract_ok=1 || true
+              fi
+            fi
             if [ "$extract_ok" -ne 1 ]; then
-              echo "--- try: docker alpine apk extract ---"
-              extract_tmp="$(mktemp -d)"
-              cp "$core_pkg" "$extract_tmp/pkg.apk"
-              # alpine:latest (3.23+) 有 apk-tools v3；alpine:edge 作为后备
-              for alpine_img in alpine:latest alpine:edge; do
-                echo "  trying $alpine_img ..."
-                rm -rf "$extract_tmp/out"
-                docker run --rm \
-                  -v "$extract_tmp:/extract" \
-                  "$alpine_img" \
-                  sh -c 'apk extract --no-chown --destination /extract/out /extract/pkg.apk' 2>&1 || true
-                if [ -f "$extract_tmp/out/usr/bin/dashboard-core" ]; then
-                  cp -f "$extract_tmp/out/usr/bin/dashboard-core" "$core_out"
-                  extract_ok=1
-                  echo "[docker] extracted via apk extract ($alpine_img)"
-                  break
-                fi
-              done
-              rm -rf "$extract_tmp"
+              extract_from_tar "$core_ipk" && extract_ok=1 || true
             fi
-
-            echo "=== APK extraction end (extract_ok=$extract_ok) ==="
-          else
-            # IPK 是 ar 归档，先解出 data.tar 再提取
-            core_tmp="$(mktemp -d)"
-            extract_from_tar() {
-              archive="$1"
-              entry="$(tar -tf "$archive" 2>/dev/null | grep -E '(^|/)usr/bin/dashboard-core$' | head -n 1 || true)"
-              if [ -z "$entry" ]; then
-                return 1
-              fi
-              tar -xOf "$archive" "$entry" > "$core_out"
-            }
-
-            if ar t "$core_pkg" >/dev/null 2>&1; then
-              (
-                cd "$core_tmp"
-                ar x "$GITHUB_WORKSPACE/$core_pkg"
-              )
-              data_tar="$(find "$core_tmp" -maxdepth 1 -type f -name 'data.tar.*' | sort | head -n 1)"
-              if [ -n "$data_tar" ]; then
-                extract_from_tar "$data_tar" && extract_ok=1 || true
-              fi
-            fi
-
-            if [ "$extract_ok" -ne 1 ] && tar -tf "$core_pkg" >/dev/null 2>&1; then
-              data_entry="$(tar -tf "$core_pkg" | grep -E '(^|/)data\.tar\.' | head -n 1 || true)"
-              if [ -n "$data_entry" ]; then
-                data_archive="$core_tmp/$(basename "$data_entry")"
-                tar -xOf "$core_pkg" "$data_entry" > "$data_archive" || true
-                if [ -s "$data_archive" ]; then
-                  extract_from_tar "$data_archive" && extract_ok=1 || true
-                fi
-              fi
-              if [ "$extract_ok" -ne 1 ]; then
-                extract_from_tar "$core_pkg" && extract_ok=1 || true
-              fi
-            fi
-            rm -rf "$core_tmp"
           fi
 
-          # 二进制提取失败时仅警告，不中断构建（APK 包本身可用于安装）
-          if [ "$extract_ok" -eq 1 ]; then
-            core_size="$(wc -c < "$core_out")"
-            test "$core_size" -gt 4096 || (echo "Extracted dashboard-core looks too small: ${core_size} bytes" && exit 1)
-          else
-            echo "Warning: Cannot extract dashboard-core binary from $core_pkg"
-            echo "The ${pkg_ext} package will still be released; bare binary fallback will be unavailable."
-          fi
+          rm -rf "$core_tmp"
+          test "$extract_ok" -eq 1 || (echo "Cannot extract dashboard-core from $core_ipk" && file "$core_ipk" && exit 1)
+          core_size="$(wc -c < "$core_out")"
+          test "$core_size" -gt 4096 || (echo "Extracted dashboard-core looks too small: ${core_size} bytes" && exit 1)
 
           aliases="${{ matrix.aliases }}"
           for alias in $aliases; do
-            cp -f "$core_pkg" "dist/dashboard-core-${alias}.${pkg_ext}"
-            if [ "$extract_ok" -eq 1 ]; then
-              cp -f "$core_out" "dist/dashboard-core-${alias}"
-            fi
+            cp -f "$core_ipk" "dist/dashboard-core-${alias}.ipk"
+            cp -f "$core_out" "dist/dashboard-core-${alias}"
           done
-          chmod 755 dist/dashboard-core-* 2>/dev/null || true
+          chmod 755 dist/dashboard-core-*
 
           echo "Backend release assets:"
           ls -lah dist
@@ -275,15 +214,14 @@ jobs:
           ls -lah dist
 
           test -f dist/install.sh || (echo "Missing install.sh" && exit 1)
-          test -f dist/luci-app-dashboard.apk || test -f dist/luci-app-dashboard.ipk || (echo "Missing luci-app-dashboard package" && exit 1)
-          test -f dist/luci-i18n-dashboard-zh-cn.apk || test -f dist/luci-i18n-dashboard-zh-cn.ipk || (echo "Missing luci-i18n-dashboard-zh-cn package" && exit 1)
+          test -f dist/luci-app-dashboard.ipk || (echo "Missing luci-app-dashboard.ipk" && exit 1)
+          test -f dist/luci-i18n-dashboard-zh-cn.ipk || (echo "Missing luci-i18n-dashboard-zh-cn.ipk" && exit 1)
           compgen -G "dist/dashboard-core-*" >/dev/null || (echo "Missing dashboard-core assets" && exit 1)
-          compgen -G "dist/dashboard-core-*.apk" >/dev/null || compgen -G "dist/dashboard-core-*.ipk" >/dev/null || (echo "Missing dashboard-core architecture packages" && exit 1)
-          # qualcommax IPQ60XX 产物（apk 或 ipk 格式）
-          for alias in ipq60xx; do
-            test -f "dist/dashboard-core-${alias}.apk" || test -f "dist/dashboard-core-${alias}.ipk" || (echo "Missing dashboard-core-${alias} package" && exit 1)
-          done
-          ! compgen -G "dist/dashboard-core.apk" >/dev/null || (echo "dashboard-core.apk must not be released as a generic asset" && exit 1)
+          compgen -G "dist/dashboard-core-*.ipk" >/dev/null || (echo "Missing dashboard-core architecture IPKs" && exit 1)
+          test -f dist/dashboard-core-aarch64.ipk || (echo "Missing dashboard-core-aarch64.ipk" && exit 1)
+          test -f dist/dashboard-core-armv8.ipk || (echo "Missing dashboard-core-armv8.ipk" && exit 1)
+          test -f dist/dashboard-core-armv7.ipk || (echo "Missing dashboard-core-armv7.ipk" && exit 1)
+          test -f dist/dashboard-core-x86.ipk || (echo "Missing dashboard-core-x86.ipk" && exit 1)
           ! compgen -G "dist/dashboard-core.ipk" >/dev/null || (echo "dashboard-core.ipk must not be released as a generic asset" && exit 1)
           ! compgen -G "dist/kmod-dashboard-monitor_*.ipk" >/dev/null || (echo "kmod assets must not be released" && exit 1)
 
