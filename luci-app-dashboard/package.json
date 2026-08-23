@@ -1,0 +1,11 @@
+{
+  "name": "luci-app-dashboard",
+  "version": "0.0.9",
+  "description": "Production-ready LuCI Dashboard",
+  "scripts": {
+    "build:css": "tailwindcss -i ./htdocs/luci-static/dashboard/input.css -o ./htdocs/luci-static/dashboard/dashboard.css --minify"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.1"
+  }
+}

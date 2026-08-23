@@ -1,0 +1,10 @@
+{
+	"admin/dashboard": {
+		"title": "Dashboard",
+		"order": 1,
+		"action": {
+			"type": "template",
+			"path": "dashboard/main"
+		}
+	}
+}
