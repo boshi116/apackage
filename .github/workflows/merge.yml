@@ -164,6 +164,7 @@ jobs:
           (
             # 批次2
             git_clone "https://github.com/gaobin89/luci-app-timecontrol" "luci-app-timecontrol" || true
+            git_clone "https://github.com/mokesher/luci-app-dashboard" "luci-app-dashboard" || true
             git_clone "https://github.com/sirpdboy/luci-app-advancedplus" "luci-app-advancedplus" || true
             git_clone "https://github.com/sirpdboy/luci-app-partexp" "luci-app-partexp" || true
             git_clone "https://github.com/sirpdboy/netspeedtest" "netspeedtest" || true
