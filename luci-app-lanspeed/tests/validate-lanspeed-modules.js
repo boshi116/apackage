@@ -3922,8 +3922,8 @@ function assertFormatActiveWindow(src) {
 function assertFormatSorting(src) {
 	const fmt = loadFormatModule(src);
 	const clients = [
-		{ identity_key: 'zulu@lan', hostname: 'Zulu', mac: '00:00:00:00:00:02', tx_bps: 20, rx_bps: 100, tcp_conns: 2, udp_conns: 4 },
-		{ identity_key: 'alpha@lan', hostname: 'Alpha', mac: '00:00:00:00:00:01', tx_bps: 30, rx_bps: 50, tcp_conns: 5, udp_conns: 1 }
+		{ identity_key: 'zulu@lan', hostname: 'Zulu', mac: '00:00:00:00:00:02', tx_bps: 20, rx_bps: 100, tx_bytes: 200, rx_bytes: 1000, tcp_conns: 2, udp_conns: 4 },
+		{ identity_key: 'alpha@lan', hostname: 'Alpha', mac: '00:00:00:00:00:01', tx_bps: 30, rx_bps: 50, tx_bytes: 300, rx_bytes: 500, tcp_conns: 5, udp_conns: 1 }
 	];
 	const identities = function(sorted) { return sorted.map(function(client) { return client.identity_key; }).join(','); };
 	if (!fmt.DEFAULT_PREFS || !Array.isArray(fmt.SORT_KEYS) ||
@@ -3936,12 +3936,14 @@ function assertFormatSorting(src) {
 	if (fmt.DEFAULT_PREFS.sortKey !== 'rx' || fmt.DEFAULT_PREFS.sortDir !== 'desc' || fmt.DEFAULT_PREFS.sortCustom !== false) {
 		fail('format.js must default the client table to descending download speed');
 	}
-	if (JSON.stringify(Array.from(fmt.SORT_KEYS)) !== JSON.stringify([ 'hostname', 'mac', 'tx', 'rx', 'tcp_conns', 'udp_conns' ])) {
-		fail('format.js must expose exactly the six sortable client columns');
+	if (JSON.stringify(Array.from(fmt.SORT_KEYS)) !== JSON.stringify([ 'hostname', 'mac', 'tx', 'rx', 'tx_bytes', 'rx_bytes', 'tcp_conns', 'udp_conns' ])) {
+		fail('format.js must expose all eight sortable client columns');
 	}
 	if (fmt.defaultSortDirection('hostname') !== 'desc' ||
 	    fmt.defaultSortDirection('mac') !== 'desc' ||
-	    fmt.defaultSortDirection('rx') !== 'desc') {
+	    fmt.defaultSortDirection('rx') !== 'desc' ||
+	    fmt.defaultSortDirection('tx_bytes') !== 'desc' ||
+	    fmt.defaultSortDirection('rx_bytes') !== 'desc') {
 		fail('format.js must start every sortable column in descending order');
 	}
 	const first = fmt.nextSort(fmt.DEFAULT_PREFS, 'hostname');
@@ -3954,6 +3956,12 @@ function assertFormatSorting(src) {
 	if (identities(fmt.sortClients(clients, 'rx')) !== 'zulu@lan,alpha@lan' ||
 	    identities(fmt.sortClients(clients, 'rx', 'asc')) !== 'alpha@lan,zulu@lan') {
 		fail('format.js must sort numeric columns in both directions');
+	}
+	if (identities(fmt.sortClients(clients, 'tx_bytes')) !== 'alpha@lan,zulu@lan' ||
+	    identities(fmt.sortClients(clients, 'tx_bytes', 'asc')) !== 'zulu@lan,alpha@lan' ||
+	    identities(fmt.sortClients(clients, 'rx_bytes')) !== 'zulu@lan,alpha@lan' ||
+	    identities(fmt.sortClients(clients, 'rx_bytes', 'asc')) !== 'alpha@lan,zulu@lan') {
+		fail('format.js must sort cumulative upload and download counters independently');
 	}
 	if (identities(fmt.sortClients(clients, 'hostname', 'asc')) !== 'alpha@lan,zulu@lan' ||
 	    identities(fmt.sortClients(clients, 'hostname', 'desc')) !== 'zulu@lan,alpha@lan') {
@@ -5047,7 +5055,7 @@ function assertViewRequires(src) {
 
 function assertCacheAwareViewEntry(src, moduleName, label) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
-	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.2.0-r2';") ||
+	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.2.0-r3';") ||
 	    !src.includes('var previousVersion = L.env.resource_version;') ||
 	    !src.includes('L.env.resource_version = RESOURCE_VERSION;') ||
 	    !src.includes(`L.require('${moduleName}')`) ||
@@ -5913,16 +5921,33 @@ function assertStatusStyleModule(src) {
 		'.lanspeed-clients-card .lanspeed-table td[data-label]::before{content:attr(data-label);',
 		'.lanspeed-ifaces-table tbody>tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));',
 		'.lanspeed-ifaces-table tbody td[data-label]::before{content:attr(data-label);',
-		'.lanspeed-table[data-client-status="hidden"]{table-layout:fixed}',
+		'.lanspeed-table{table-layout:fixed}',
 		'.lanspeed-client-control-header{text-align:center}',
-		'.lanspeed-control-actions{display:grid;',
-		'grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch}',
-		'.lanspeed-control-button{width:100%}',
-		'.lanspeed-table[data-client-status="hidden"] td:nth-child(8){width:22%}'
+		'.lanspeed-control-actions{display:flex;flex-wrap:nowrap;justify-content:flex-start}',
+		'.lanspeed-control-button{width:5.5em;min-width:5.5em}',
+		'.lanspeed-table th:nth-child(1)',
+		'width:22%',
+		'width:13.6%;text-align:center}',
+		'width:5%;text-align:center}'
 	].forEach(function(marker) {
 		if (!responsiveCss.includes(marker))
 			fail(`statusStyleResponsive.js must retain responsive status behavior: ${marker}`);
 	});
+	if (!baseCss.includes('min-height:calc(var(--lanspeed-control-height)*.82)!important') ||
+	    !baseCss.includes('padding:.28em .7em!important') ||
+	    !baseCss.includes('font-size:inherit!important;') ||
+	    !baseCss.includes('font-weight:inherit!important;line-height:inherit!important')) {
+		fail('client control buttons must use compact theme-native control sizing');
+	}
+	if (!baseCss.includes('.lanspeed-client-total{display:inline-block;color:inherit;font-size:inherit;') ||
+	    !baseCss.includes('font-weight:inherit;line-height:inherit;white-space:nowrap}')) {
+		fail('cumulative traffic values must use the same typography as live rate values');
+	}
+	if (!baseCss.includes('.lanspeed-client-total-header,.lanspeed-client-total-cell{text-align:center}') ||
+	    !responsiveCss.includes('width:13.6%;text-align:center}') ||
+	    !responsiveCss.includes('width:5%;text-align:center}')) {
+		fail('client totals and connection controls must use a compact, aligned desktop table rhythm');
+	}
 	themeCss.forEach(function(theme) {
 		if (!theme[2].includes(`lanspeed-theme-${theme[1]}`) ||
 		    !theme[2].includes('.lanspeed-metrics{') ||
@@ -5991,10 +6016,10 @@ function assertStatusShellModule(src) {
 	    src.includes('lanspeed-diagnostic-') || src.includes('diagnosticsCard')) {
 		fail('lanspeed/statusShell.js must not render the dedicated diagnostics page inside realtime status');
 	}
-	const sortableKeys = [ 'hostname', 'mac', 'tx', 'rx', 'tcp_conns', 'udp_conns' ];
+	const sortableKeys = [ 'hostname', 'mac', 'tx', 'rx', 'tx_bytes', 'rx_bytes', 'tcp_conns', 'udp_conns' ];
 	if (!src.includes('function sortableHeader(viewState, refs, sortKey, label, attrs)') ||
 	    sortableKeys.some(function(key) { return !src.includes(`sortableHeader(viewState, refs, '${key}'`); })) {
-		fail('lanspeed/statusShell.js must sort directly from all six requested client table headers');
+		fail('lanspeed/statusShell.js must sort directly from all eight requested client table headers');
 	}
 	if (src.includes('refs.sortSel') || src.includes("_('排序')")) {
 		fail('lanspeed/statusShell.js must not render a separate sorting control');
@@ -6038,11 +6063,19 @@ function assertStatusRefreshModule(src) {
 	if (!src.includes("'class': 'lanspeed-client-name'") ||
 	    !src.includes("'class': 'mono lanspeed-client-mac'") ||
 	    !src.includes("'class': 'num lanspeed-client-value'") ||
+	    !src.includes("'class': 'num lanspeed-client-total-cell '") ||
 	    !src.includes("'class': 'lanspeed-client-state-cell'") ||
-	    !src.includes("'data-label': _('上行')") ||
-	    !src.includes("'data-label': _('下行')") ||
+	    (!src.includes("'data-label': _('上行')") && !src.includes('clientTrafficCell(c, \'tx\'')) ||
+	    (!src.includes("'data-label': _('下行')") && !src.includes('clientTrafficCell(c, \'rx\'')) ||
 	    !src.includes("'data-label': _('状态')")) {
 		fail('lanspeed/statusRefresh.js must label client fields for the narrow stacked layout');
+	}
+	if (!src.includes("clientTrafficTotalCell(c, 'tx', !nssProfile)") ||
+	    !src.includes("clientTrafficTotalCell(c, 'rx', !nssProfile)") ||
+	    !src.includes("var label = isUpload ? _('累计上传') : _('累计下载')") ||
+	    !src.includes("lanspeed-client-total-upload-cell") ||
+	    !src.includes("lanspeed-client-total-download-cell")) {
+		fail('statusRefresh.js must render adjacent, independently labelled x86 cumulative upload/download columns');
 	}
 	if (!src.includes('reconcileClientRows(refs.tbody') ||
 	    !src.includes("'data-client-key': String(fmt.identityOf(c))") ||
@@ -6130,7 +6163,7 @@ function assertDiagnosticsStyleModule(src) {
 		'@media (max-width:1100px)', '@media (max-width:900px)',
 		'@media (max-width:700px)', '@media (max-width:480px)',
 		'.lanspeed-diagnostic-stage-evidence{grid-template-columns:minmax(0,1fr)}',
-		'.lanspeed-diagnostics-rpc-table tbody>tr>td[data-label]::before{content:attr(data-label);'
+		'.lanspeed-diagnostics-tc-table tbody>tr>td[data-label]::before{content:attr(data-label);'
 	].forEach(function(marker) {
 		if (!responsiveCss.includes(marker))
 			fail(`diagnosticsStyleResponsive.js must retain responsive diagnostics behavior: ${marker}`);
@@ -6151,6 +6184,9 @@ function assertDiagnosticsShellModule(src) {
 	    !src.includes('buildSummarySection(refs, viewState)') ||
 	    !src.includes('buildPipelineSection(refs)') ||
 	    !src.includes('buildHealthSection(refs)') ||
+	    !src.includes("sectionHeader(_('基础接口与 RPC 健康')") ||
+	    !src.includes("E('h4', {}, _('本机 TC 状态'))") ||
+	    !src.includes('refs.tcObjectsBody') ||
 	    !src.includes('buildSupportSection(refs, viewState)') ||
 	    !src.includes("stage(refs, 'rate'") ||
 	    !src.includes("stage(refs, 'edge'") ||
@@ -6187,6 +6223,8 @@ function assertDiagnosticsRefreshModule(src) {
 	    !src.includes("refs.root.setAttribute('data-page-state', state)") ||
 	    !src.includes('renderPipeline(refs, viewState)') ||
 	    !src.includes('renderInterfaces(refs, viewState)') ||
+	    !src.includes('renderTcStatus(refs, viewState)') ||
+	    !src.includes('TC_CONFLICT_LABELS') ||
 	    !src.includes('renderSubsystems(refs, viewState)') ||
 	    !src.includes('renderWarnings(refs, viewState.status') ||
 	    !src.includes("'data-label': _('结果')") ||
@@ -7068,7 +7106,7 @@ function matchingConfigStatus(values) {
 		max_clients: values.max_clients,
 		enable_bpf: values.enable_bpf === '1',
 		enable_conntrack_fallback: values.enable_conntrack_fallback === '1',
-		version: '1.2.0-r2',
+		version: '1.2.0-r3',
 		capabilities: { bpf: true, conntrack_fallback: true },
 		evidence: {
 			platform: { profile: 'nss_aarch64' },
@@ -7098,7 +7136,7 @@ function assertConfigFormBehavior(src) {
 	}, makeConfigIfaceStub(), model);
 	asyncChecks.push(validLoadForm.loadValues().then(function(values) {
 		if (values.pageState !== 'ready' || !values.rpc.status.ok ||
-			values.rpc.status.phase !== 'success' || values.status.version !== '1.2.0-r2') {
+			values.rpc.status.phase !== 'success' || values.status.version !== '1.2.0-r3') {
 			fail('configForm.js must accept the complete status contract and retain capability evidence');
 		}
 	}).catch(function(error) {

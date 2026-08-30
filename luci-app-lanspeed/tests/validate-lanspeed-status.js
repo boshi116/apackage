@@ -248,7 +248,7 @@ function successRpc(at) {
 
 function normalizedResult(marker, at) {
 	return {
-		status: { marker: marker, version: '1.2.0-r2' },
+		status: { marker: marker, version: '1.2.0-r3' },
 		clients: { clients: [] },
 		interfaces: { interfaces: [] },
 		uci: {},
@@ -261,7 +261,7 @@ async function testIndependentRpcSettlement(context, fmt) {
 	let tick = 1000;
 	const clock = function() { tick += 10; return tick; };
 	const rpc = {
-		status: function() { return Promise.resolve({ version: '1.2.0-r2' }); },
+		status: function() { return Promise.resolve({ version: '1.2.0-r3' }); },
 		clients: function() { return Promise.reject(new Error('clients down')); },
 		interfaces: function() { return Promise.resolve({ interfaces: [ { name: 'br-lan' } ] }); },
 		uciGet: function() { return Promise.reject(new Error('uci down')); }
@@ -396,7 +396,7 @@ async function testLiveSamplePairing(context, fmt) {
 					bpf: { last_complete_snapshot_ms: statusSampleMs }
 				};
 			return Promise.resolve({
-				version: '1.2.0-r2',
+				version: '1.2.0-r3',
 				coverage: { quality: 'ok', tx_pct: coveragePct, rx_pct: coveragePct },
 				evidence: rateEvidence
 			});
@@ -882,7 +882,7 @@ function loadShellAndRefresh(context, fmt) {
 		fmt,
 		{ detailHref: function(pathname, key) { return pathname + '?client=' + encodeURIComponent(key); } },
 		{ cell: function() { return fakeElement('td', { class: 'lanspeed-client-control' }); } },
-		{ FULL_VERSION: '1.2.0-r2' },
+		{ FULL_VERSION: '1.2.0-r3' },
 		{
 			hideIpv6RangesValue: function(value) { return value || ''; },
 			displayIpsForClient: function(values) { return Array.isArray(values) ? values : []; }
@@ -910,6 +910,8 @@ function client(index) {
 		ips: [ '192.0.2.' + index ],
 		tx_bps: index * 100,
 		rx_bps: index * 200,
+		tx_bytes: index * 1024,
+		rx_bytes: index * 1024 * 1024,
 		tcp_conns: index,
 		udp_conns: index,
 		collector_mode: 'bpf',
@@ -919,6 +921,9 @@ function client(index) {
 }
 
 function testPaginationAndUiStates(context, fmt) {
+	assert.strictEqual(fmt.formatBytes(1024), '1.00 KB');
+	assert.strictEqual(fmt.formatBytes(1024 * 1024 * 1024), '1.00 GB');
+	assert.strictEqual(fmt.formatBytes(1024 * 1024 * 1024 * 1024), '1.00 TB');
 	const items = Array.from({ length: 63 }, function(_value, index) { return index; });
 	const third = fmt.paginate(items, 3, 25);
 	assert.deepStrictEqual(Array.from(third.items), items.slice(50));
@@ -959,7 +964,7 @@ function testPaginationAndUiStates(context, fmt) {
 	let refreshCount = 0;
 	const clients = Array.from({ length: 30 }, function(_value, index) { return client(index + 1); });
 	const state = {
-		status: { version: '1.2.0-r2', coverage: { quality: 'idle' } },
+		status: { version: '1.2.0-r3', coverage: { quality: 'idle' } },
 		clients: { clients: clients },
 		interfaces: { interfaces: [ { name: 'br-lan', role: 'lan', rx_bps: 100, tx_bps: 200 } ] },
 		rpc: successRpc(100000),
@@ -1015,6 +1020,16 @@ function testPaginationAndUiStates(context, fmt) {
 		'explicit routed view must not be presented as automatic Access Edge');
 	assert(String(nssState.refs.collectorPill.title || '').includes('互联网/路由'),
 		'explicit routed view must describe its FastN+FastS scope');
+	assert(!textOf(nssState.refs.tbody.children[0]).includes('累计'),
+		'NSS rows must retain their existing rate-only presentation in the x86-first rollout');
+	assert.strictEqual(nssState.refs.totalUploadHeader.hidden, true,
+		'NSS must hide the x86-only cumulative upload column');
+	assert.strictEqual(nssState.refs.totalDownloadHeader.hidden, true,
+		'NSS must hide the x86-only cumulative download column');
+	assert.strictEqual(findByClass(nssState.refs.tbody.children[0], 'lanspeed-client-total-upload-cell').hidden, true,
+		'NSS client rows must hide their cumulative upload cell');
+	assert.strictEqual(findByClass(nssState.refs.tbody.children[0], 'lanspeed-client-total-download-cell').hidden, true,
+		'NSS client rows must hide their cumulative download cell');
 	const pendingClient = Object.assign({}, client(2), {
 		tx_bps: 0, rx_bps: 0, collector_mode: 'access_edge',
 		rate_meta: { scope: 'none',
@@ -1066,13 +1081,25 @@ function testPaginationAndUiStates(context, fmt) {
 	assert.strictEqual(toolbarRight.children[2], state.refs.btnPause);
 	assert.strictEqual(state.refs.tbody.children.length, 10);
 	assert.ok(textOf(state.refs.tbody.children[0]).includes('client-30'));
+	assert.strictEqual(state.refs.totalUploadHeader.hidden, false);
+	assert.strictEqual(state.refs.totalDownloadHeader.hidden, false);
+	const firstUploadCell = findByClass(state.refs.tbody.children[0], 'lanspeed-client-total-upload-cell');
+	const firstDownloadCell = findByClass(state.refs.tbody.children[0], 'lanspeed-client-total-download-cell');
+	assert.ok(firstUploadCell && firstDownloadCell,
+		'x86 rows must render adjacent cumulative upload and download cells');
+	assert.strictEqual(textOf(firstUploadCell), '30.0 KB');
+	assert.strictEqual(textOf(firstDownloadCell), '30.0 MB');
+	assert(!textOf(state.refs.tbody.children[0].children[2]).includes('累计'),
+		'live upload rate cells must no longer contain cumulative traffic');
+	assert(!textOf(state.refs.tbody.children[0].children[3]).includes('累计'),
+		'live download rate cells must no longer contain cumulative traffic');
 	assert.ok(state.refs.collectorPill.className.includes('lanspeed-collector-status'));
 	assert.strictEqual(findAllByClass(built.root, 'lanspeed-collector-status').length, 1);
 	assert.strictEqual(findAllByClass(built.root, 'lanspeed-service-status').length, 0);
 	assert.strictEqual(findAllByClass(built.root, 'lanspeed-freshness-status').length, 0);
 	assert.strictEqual(state.refs.servicePill, undefined);
 	assert.strictEqual(state.refs.freshnessPill, undefined);
-	assert.strictEqual(state.refs.meta.textContent, '后端 1.2.0-r2 · luci 1.2.0-r2');
+	assert.strictEqual(state.refs.meta.textContent, '后端 1.2.0-r3 · luci 1.2.0-r3');
 	assert.ok(!state.refs.meta.textContent.includes('检查于'));
 	assert.strictEqual(state.pageCount, 3);
 	assert.strictEqual(state.refs.root.attrs['aria-busy'], 'false');
@@ -1087,6 +1114,10 @@ function testPaginationAndUiStates(context, fmt) {
 		'a changed live rate must render the real backend value immediately without interpolation');
 	assert.strictEqual(findByClass(stableFirstRow, 'lanspeed-live-rate'), null,
 		'rate rendering must not introduce animation-only DOM');
+	assert.strictEqual(textOf(findByClass(stableFirstRow, 'lanspeed-client-total-upload-cell')), '30.0 KB',
+		'cumulative upload counters must automatically use the largest readable unit');
+	assert.strictEqual(textOf(findByClass(stableFirstRow, 'lanspeed-client-total-download-cell')), '30.0 MB',
+		'cumulative download counters must automatically use the largest readable unit');
 
 	state.refs.pageNext.listeners.click({ preventDefault: function() {} });
 	assert.strictEqual(state.page, 2);
