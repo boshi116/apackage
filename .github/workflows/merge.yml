@@ -154,7 +154,7 @@ jobs:
             git_clone "https://github.com/riverscn/openwrt-iptvhelper" "openwrt-iptvhelper" || true
             git_clone "https://github.com/kongfl888/luci-app-timedreboot" "luci-app-timedreboot" || true
             git_clone "https://github.com/destan19/OpenAppFilter" "OpenAppFilter" || true
-            git_clone "https://github.com/upcliujie/luci-app-tcpdump" "luci-app-tcpdump" || true
+            git_clone "https://github.com/boshi116/luci-app-tcpdump" "luci-app-tcpdump" || true
             git_clone "https://github.com/IamJasperJ/luci-app-traffic-statistic" "luci-app-traffic-statistic" || true
             git_clone "https://github.com/destan19/luci-app-harbor-file" "luci-app-harbor-file" || true
             git_clone "https://github.com/migee99/luci-app-clientstatus" "luci-app-clientstatus" || true
