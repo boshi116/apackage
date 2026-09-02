@@ -1,0 +1,102 @@
+# luci-app-lanspeed
+
+> 本仓库所有代码及文档（包括本 README）均由 AI 生成。
+> 
+`luci-app-lanspeed` 为 ImmortalWrt / OpenWrt 提供 LAN 客户端实时速率、连接详情、运行诊断与配置页面。当前版本为 `1.2.0-r3`。
+
+x86_64 使用独立 TC-BPF 路径；Qualcomm aarch64 NSS 使用 Access Edge 提供客户端总速率，ECM/NSS 与 TC-BPF 只做路径分类。两套平台的测速和客户端控制代码独立编译，不交叉探测或回退。
+
+## 快速导航
+
+| 层级 | 页面 | 主要内容 |
+|---|---|---|
+| 使用 | [使用指南](docs/guide/usage.md) | [界面入口](docs/guide/usage.md#界面入口) · [客户端控制](docs/guide/usage.md#客户端控制) · [配置](docs/guide/usage.md#配置) · [ubus](docs/guide/usage.md#ubus-调试) |
+| 原理 | [平台与采集](docs/guide/platforms.md) | [平台边界](docs/guide/platforms.md#平台模块) · [x86](docs/guide/platforms.md#x86tc-bpf) · [NSS](docs/guide/platforms.md#qualcomm-nss) · [融合语义](docs/guide/platforms.md#access-edge-与分类语义) |
+| 运维 | [部署与排障](docs/guide/operations.md) | [依赖](docs/guide/operations.md#运行依赖) · [内核配置](docs/guide/operations.md#内核配置) · [告警](docs/guide/operations.md#可见性与告警) · [排障](docs/guide/operations.md#故障排查) |
+| 开发 | [构建与发布](docs/guide/development.md) | [源码编译](docs/guide/development.md#安装与编译) · [测试](docs/guide/development.md#测试) · [项目结构](docs/guide/development.md#项目结构) · [发布](docs/guide/development.md#发布) |
+
+## 核心功能
+
+- 实时显示客户端上行、下行、连接数、主机名、地址和物理接入点。
+- 客户端详情显示该客户端的已发布上下行总速率；连接行由独立 Conntrack 窗口采样，不再展示无法可靠校准的流量分类。
+- 实时状态页支持独立上传/下载限速及禁用上网；修改限速时保留现有连接，失败只回滚 LAN Speed 专用对象。
+- NSS 总速率由 Access Edge 提供；独立 FastRate worker 按固定节拍采集 FastN/FastS，ECM/NSS 与 TC-BPF 分类值不与总速率相加。
+- NSS 可选互联网/路由视图只展示 FastN+FastS 观察到的路由流量，与客户端总速率 owner 和客户端控制分离。
+- CT-Netlink 连接采集失败时回退 CT-Procfs；连接计数不参与客户端总速率。
+- 速率、连接、reload 和慢探针在独立 worker 中执行，普通 RPC 只读取完整发布快照。
+- 诊断页检查 RPC、BPF、ECM、Access Edge、接口和版本契约，并给出机器可读原因。
+- Aurora、Argon、Bootstrap 三主题支持桌面和移动端布局。
+
+## 平台一览
+
+| 目标 | 客户端总速率 | 客户端控制 | NSS/ECM |
+|---|---|---|---|
+| `x86_64` | 原生 TC-BPF | HTB + FQ；上传使用自有 IFB | 不编译、不探测、不展示 |
+| Qualcomm `aarch64` | Access Edge，必要时使用严格同窗回退 | 每个客户端每个方向只有一个聚合执行器：下载在真实客户端出口使用 NSSHTB + NSSBFIFO，上传在真实客户端入口使用 NSS IGS 的 NSSHTB + NSSBFIFO；CPU/透明代理只被分类到同一队列 | ECM/NSS 与 TC-BPF 只做路径分类 |
+| 32 位 ARM、i386、MIPS | Unsupported | 不支持 | 不支持 |
+
+详细边界、采样窗口和融合公式见[平台与采集](docs/guide/platforms.md)。
+
+## 安装与编译
+
+在 ImmortalWrt / OpenWrt 源码根目录执行：
+
+```sh
+# 在 feeds.conf 中添加 lanspeed feed
+echo "src-git lanspeed https://github.com/qimaoww/luci-app-lanspeed.git" >> feeds.conf
+
+# 更新并安装
+./scripts/feeds update lanspeed
+./scripts/feeds install -a -p lanspeed
+
+# 在 menuconfig 中选中 LuCI -> Applications -> luci-app-lanspeed
+# BPF 是必选依赖，会自动选择 Network -> lanspeedd-bpf 和 lanspeedd
+make menuconfig
+
+# 多线程编译
+make -j"$(nproc)" package/lanspeedd/compile
+make -j"$(nproc)" package/luci-app-lanspeed/compile
+```
+
+`luci-app-lanspeed` 强制依赖 `lanspeedd-bpf`，`lanspeedd-bpf` 依赖 `lanspeedd`。同一个 `package/lanspeedd/compile` 目标根据 SDK 架构生成 TC 对象，并只在 aarch64 生成 ECM 对象。
+
+### 预编译发布
+
+GitHub Release 只提供 x86_64 的三个 APK 和整合归档，不发布 Qualcomm NSS 预编译包。NSS 控制依赖专属 `kmod-lanspeed-nss-control`，该内核模块必须与设备的内核 ABI、NSS 驱动和固件编译配置一致，无法用一个通用 APK 覆盖不同固件；NSS 用户建议使用目标固件的同版源码或 SDK 自行编译，且不要混用其他固件生成的 kmod。
+
+完整 SDK 构建与发布说明见[构建与发布](docs/guide/development.md)。
+
+## 界面预览
+
+截图由真实 Chromium 使用确定性合成数据渲染。客户端使用文档保留地址、虚构主机名与本地管理 MAC，不包含目标设备数据；PNG 元数据已移除。
+
+| 主题 | 实时状态 | 运行诊断 | LAN Speed 配置 |
+|---|---|---|---|
+| Aurora | [桌面](docs/screenshots/lanspeed-overview-aurora-desktop.png) / [移动](docs/screenshots/lanspeed-overview-aurora-mobile.png) | [桌面](docs/screenshots/lanspeed-diagnostics-aurora-desktop.png) | [桌面](docs/screenshots/lanspeed-config-aurora-desktop.png) |
+| Argon | [桌面](docs/screenshots/lanspeed-overview-argon-desktop.png) / [移动](docs/screenshots/lanspeed-overview-argon-mobile.png) | [桌面](docs/screenshots/lanspeed-diagnostics-argon-desktop.png) | [桌面](docs/screenshots/lanspeed-config-argon-desktop.png) |
+| Bootstrap | [桌面](docs/screenshots/lanspeed-overview-bootstrap-desktop.png) / [移动](docs/screenshots/lanspeed-overview-bootstrap-mobile.png) | [桌面](docs/screenshots/lanspeed-diagnostics-bootstrap-desktop.png) | [桌面](docs/screenshots/lanspeed-config-bootstrap-desktop.png) |
+
+## 重要限制
+
+- hardware flow offload 会绕过 x86 CPU TC hook，无法靠 conntrack 字节补齐客户端总速率。
+- Wi-Fi station 与以太网计数口径不兼容时保留 `domain_mismatch`，不生成虚假覆盖率。
+- WDS、Mesh、共享下联和未验证组播只声明 Partial，不伪装为完整覆盖。
+- x86 控制不会覆盖外部 qdisc、IFB 或 nft 对象；冲突时拒绝应用并显示原因。
+- NSS 控制先按真实 N/S 同窗证明客户端身份和实际 hook；同一客户端同一方向只建立一个聚合队列。路径或可信 Access Edge 未证明时不发布限速分类。透明代理新建的 WAN socket 丢失客户端身份，因此不会在 WAN 侧反推归属。
+- 正常整形不主动丢包，但有限队列不能承诺任意持续超速下绝对零丢包；`drops` 增长会报告队列溢出。
+
+## 包组成
+
+| 包 | 内容 |
+|---|---|
+| `lanspeedd` | Rust daemon、UCI、ubus、连接采集与平台调度 |
+| `lanspeedd-bpf` | 对应架构的 TC-BPF 对象；aarch64 包额外包含 ECM kprobe 对象 |
+| `luci-app-lanspeed` | 实时状态、运行诊断、配置和连接详情页面 |
+| `kmod-lanspeed-nss-control` | Qualcomm NSS 专属 Generic Netlink、IGS、FastRate 与队列控制内核模块；必须随目标固件自行编译 |
+
+安装依赖、内核选项及服务冲突处理见[部署与排障](docs/guide/operations.md)。
+
+## 许可证
+
+除目录或文件明确另有声明外，本仓库自有代码采用 [Apache License 2.0](LICENSE)。
+`net/lanspeedd/rust/vendor/` 中的第三方依赖保留各自随附的许可证；eBPF 对象中的 `GPL` 字符串是提供给 Linux 内核的程序许可证标记，相关源码仍按其文件和包元数据声明授权。

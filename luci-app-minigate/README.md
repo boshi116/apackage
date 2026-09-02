@@ -1,0 +1,415 @@
+# MiniGate - OpenWrt 轻量网关管理
+
+一个类似 Lucky 的轻量级 OpenWrt 应用，提供四大核心功能：DDNS、SSL 证书、反向代理、登录防护。
+
+当前版本：**v1.3.9**
+
+> OpenWrt 用户请从 [Releases](https://github.com/tpxcer/luci-app-minigate/releases/latest) 下载 `luci-app-minigate_1.3.9-1_all.ipk`。不要把 GitHub 自动生成的 `Source code (zip)` / `Source code (tar.gz)` 当安装包上传到 LuCI。
+
+## 项目定位
+
+MiniGate 面向需要自托管轻量网关能力的 OpenWrt / ImmortalWrt 用户，目标是在 LuCI 中集中完成域名解析、证书签发、反向代理和登录防护配置，减少在路由器上手动维护多组脚本、Nginx 配置和防火墙规则的成本。
+
+项目重点关注以下场景：
+
+- 家庭或小型办公网络中的自托管服务入口管理
+- IPv4 / IPv6 双栈 DDNS 与反向代理配置
+- Cloudflare DNS-01 自动签发和续期证书
+- 直接 IP 访问、未知 Host、暴力登录尝试等常见暴露面防护
+- OpenWrt / ImmortalWrt opkg、apk、源码安装和 SDK 编译兼容
+
+## 维护状态
+
+- 维护者：[@tpxcer](https://github.com/tpxcer)
+- 当前维护分支：`main`
+- 发布方式：GitHub Releases 提供源码包和 OpenWrt/ImmortalWrt 兼容安装包
+- 安全策略：见 [SECURITY.md](SECURITY.md)
+- 贡献说明：见 [CONTRIBUTING.md](CONTRIBUTING.md)
+- 许可证：MIT License
+
+## 功能特性
+
+### 🌐 DDNS (动态域名解析)
+- **Cloudflare** DNS API 支持
+- **IPv4 / IPv6 / 双栈** 模式，同时更新 A 和 AAAA 记录
+- 自动检测 WAN IP 变化并更新 DNS 记录
+- 同名同类型记录重复时，保留匹配当前 IP 的记录并清理其余旧记录，避免旧 IP 继续参与解析
+- 支持从网络接口或外部 URL 获取 IP
+- 可配置检查间隔和强制更新间隔
+- 一键手动触发更新
+
+### 🔒 SSL/TLS 证书 (ACME)
+- **Let's Encrypt** 自动证书签发
+- 使用 **DNS-01** 挑战方式（Cloudflare）
+- 支持 ECC / RSA 多种密钥类型
+- 自动续期（通过 cron 每天检查）
+- Staging 模式用于测试
+
+### 🔄 反向代理
+- 基于 **Nginx** 的轻量反向代理
+- **IPv6 监听**支持（listen [::]:port 双栈）
+- HTTP/2、WebSocket 支持
+- 自动 SSL 证书关联
+- 安全 Headers（HSTS 等）
+- 多站点管理
+- **直接 IP 访问拒绝**：只允许域名访问，扫描器直接断开
+- **未知 Host 拒绝**：同一监听端口下，未配置的域名/前缀不会落到第一个反代站点
+
+### 🛡 登录防护 (Login Guard)
+- 监控 **SSH（dropbear）** 和 **LuCI 网页** 登录失败
+- 在「失败窗口」内累积达到阈值（默认 3 次/10 分钟）→ 自动用 nftables 封禁源 IP
+- 可配置封禁时长（1 小时 / 6 小时 / **12 小时（默认）** / 24 小时 / 1 周 / 30 天）
+- **LAN 私有段自动豁免**（192.168.x / 10.x / 127.x / 172.16-31.x），可加额外白名单
+- **滑动时间窗口**：超过窗口未再失败则计数自动清零
+- 持久化存储 `/etc/minigate/login-guard/bans.txt`，重启/固件升级后已生效封禁自动恢复
+- LuCI 页面实时显示封禁列表、剩余时间、归属地（结合归属地查询 API）
+- 失败计数列表默认显示 5 条，支持切换 5 / 20 / 30 条，并复用访客追踪归属地查询；显示最近访问时间并按最新时间排序
+- 支持网页**一键解封**、**手动封禁**、**清空全部**
+- 后台 watchdog 每 5 分钟自检 nft set，防 fw4 reload 后规则丢失
+
+### 👁 访客追踪
+- 总览页面实时显示访客 IP、归属地、在线状态
+- 5 分钟内有访问记为「在线」（绿点），否则「离线」（灰点）
+- IP 归属地后端查询（ip9.com.cn → ip-api.com → pconline 多源回退）
+
+---
+
+## 安装方法
+
+### 方法 1：IPK 安装（推荐，OpenWrt / ImmortalWrt opkg 版本）
+
+从 [Releases](https://github.com/tpxcer/luci-app-minigate/releases/latest) 下载：
+
+`luci-app-minigate_1.3.9-1_all.ipk`
+
+**通过 LuCI 界面安装：**
+1. 打开 LuCI → **系统** → **软件包**
+2. 点击 **上传软件包**
+3. 选择 `luci-app-minigate_1.3.9-1_all.ipk`，点击安装
+
+**通过命令行安装：**
+
+```bash
+cd /tmp
+wget -O luci-app-minigate_1.3.9-1_all.ipk https://github.com/tpxcer/luci-app-minigate/releases/download/v1.3.9/luci-app-minigate_1.3.9-1_all.ipk
+opkg update
+opkg install /tmp/luci-app-minigate_1.3.9-1_all.ipk
+rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
+/etc/init.d/uhttpd restart
+/etc/init.d/minigate restart
+```
+
+> 如果 LuCI 上传时报 `Malformed package file`，请确认下载的是 Release 里的 `.ipk` 资产，并确认该 `.ipk` 是 OpenWrt 原生 tar.gz 外层格式。ImmortalWrt 24.10.5 的新版 opkg 对格式更严格，Debian 风格 ar 外层 `.ipk` 会被判定为 malformed。
+
+### 维护者打包
+
+Release 用的 `.ipk` 请用仓库脚本生成，避免生成 Debian 风格 ar 外层包：
+
+```bash
+./scripts/build-ipk.sh
+```
+
+脚本会输出：
+
+```text
+dist/luci-app-minigate_1.3.9-1_all.ipk
+```
+
+该文件外层是 OpenWrt/ImmortalWrt 24.10 兼容的 `tar.gz`，内部成员顺序为 `debian-binary`、`control.tar.gz`、`data.tar.gz`。
+
+### 方法 2：源码安装（适用所有版本）
+
+适用于 **OpenWrt 25.xx（apk）**、**OpenWrt 24.xx 及以下（opkg）** 以及 **ImmortalWrt**。
+
+```bash
+# 1. 下载源码包到电脑，然后上传到路由器
+scp luci-app-minigate-v1.3.9-src.tar.gz root@192.168.1.1:/tmp/
+
+# 2. SSH 到路由器
+ssh root@192.168.1.1
+
+# 3. 解压并安装
+cd /tmp
+tar xzf luci-app-minigate-v1.3.9-src.tar.gz
+cd luci-app-minigate-v1.3.9
+sh install.sh
+
+# 4. 启动服务
+/etc/init.d/minigate restart
+
+# 5. 访问 LuCI → 服务 → MiniGate
+```
+
+### 方法 3：OpenWrt SDK 编译（适用所有版本，含 APK）
+
+如果需要正规的 `.apk` 安装包，需使用 OpenWrt SDK 编译：
+
+```bash
+# 将源码放入 SDK 的 package 目录
+cp -r luci-app-minigate ~/openwrt/package/
+
+# 编译
+cd ~/openwrt
+make package/luci-app-minigate/compile V=s
+
+# 生成的 ipk 或 apk 在 bin/packages/ 目录下
+```
+
+---
+
+## 升级方法
+
+### 源码升级（通用）
+
+```bash
+scp luci-app-minigate-v1.3.9-src.tar.gz root@192.168.1.1:/tmp/
+ssh root@192.168.1.1
+cd /tmp && tar xzf luci-app-minigate-v1.3.9-src.tar.gz
+cd luci-app-minigate-v1.3.9
+sh install.sh
+/etc/init.d/minigate restart
+```
+
+### IPK 升级
+
+```bash
+opkg install --force-reinstall /tmp/luci-app-minigate_1.3.9-1_all.ipk
+rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
+/etc/init.d/minigate restart
+```
+
+配置文件 `/etc/config/minigate` 会自动保留。
+
+---
+
+## 卸载方法
+
+### 方式 1：保留配置卸载（推荐）
+
+适合以后还可能重装 MiniGate 的情况。此方式会删除 LuCI 页面、脚本和服务文件，但保留 `/etc/config/minigate` 以及 `/etc/minigate/` 下的证书、封禁记录等数据。
+
+```sh
+/etc/init.d/minigate stop 2>/dev/null
+/etc/init.d/minigate disable 2>/dev/null
+
+# opkg 系统
+opkg remove luci-app-minigate --force-depends 2>/dev/null
+
+# apk 系统（OpenWrt 25.xx / ImmortalWrt 25.xx）
+apk del luci-app-minigate 2>/dev/null
+
+/etc/init.d/uhttpd restart
+```
+
+如果你是早期源码安装，包管理器没有记录这个软件包，可以按下面这些明确路径逐项清理程序文件：
+
+```sh
+/etc/init.d/minigate stop 2>/dev/null
+/etc/init.d/minigate disable 2>/dev/null
+
+rm -f /etc/init.d/minigate
+rm -f /usr/lib/lua/luci/controller/minigate.lua
+rm -f /usr/lib/lua/luci/model/cbi/minigate/general.lua
+rm -f /usr/lib/lua/luci/model/cbi/minigate/ddns.lua
+rm -f /usr/lib/lua/luci/model/cbi/minigate/acme.lua
+rm -f /usr/lib/lua/luci/model/cbi/minigate/proxy.lua
+rm -f /usr/lib/lua/luci/model/cbi/minigate/login_guard.lua
+rm -f /usr/lib/lua/luci/view/minigate/log.htm
+rm -f /usr/lib/minigate/ddns.sh
+rm -f /usr/lib/minigate/acme.sh
+rm -f /usr/lib/minigate/proxy.sh
+rm -f /usr/lib/minigate/geofence.sh
+rm -f /usr/lib/minigate/login_guard.sh
+rm -f /usr/lib/opkg/info/luci-app-minigate.control
+rm -f /usr/lib/opkg/info/luci-app-minigate.list
+rm -f /usr/lib/opkg/info/luci-app-minigate.postinst
+rm -f /usr/lib/opkg/info/luci-app-minigate.prerm
+rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
+/etc/init.d/uhttpd restart
+```
+
+### 方式 2：完整卸载并清理配置
+
+确认不再使用 MiniGate 时再执行。此方式会删除配置、证书记录、登录防护封禁记录和日志。
+
+```sh
+/etc/init.d/minigate stop 2>/dev/null
+/etc/init.d/minigate disable 2>/dev/null
+opkg remove luci-app-minigate --force-depends 2>/dev/null
+apk del luci-app-minigate 2>/dev/null
+
+rm -f /etc/config/minigate
+rm -f /etc/minigate/login-guard/bans.txt
+rm -f /var/log/minigate-ddns.log
+rm -f /var/log/minigate-acme.log
+rm -f /var/log/minigate-proxy.log
+rm -f /var/log/minigate-login-guard.log
+rm -f /var/log/minigate-access.log
+sed -i '/minigate/d' /etc/crontabs/root 2>/dev/null
+/etc/init.d/cron restart 2>/dev/null
+rm -f /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null
+/etc/init.d/uhttpd restart
+```
+
+> 说明：如果目录里还有文件，`rmdir` 不会删除目录；这是刻意保守处理，避免误删证书或其他数据。需要彻底删除空目录时，可确认内容后再执行：`rmdir /etc/minigate/login-guard /etc/minigate 2>/dev/null`。
+
+---
+
+## 使用指南
+
+### 第一步：基础配置
+1. 进入 **LuCI → 服务 → MiniGate**
+2. 在「总览」页面开启 MiniGate
+3. 如需 IPv6 反代监听，开启「反向代理监听 IPv6」
+
+### 第二步：配置 DDNS
+1. 切换到 **DDNS** 标签页
+2. 启用 DDNS，填入 Cloudflare Zone ID 和 API Token
+3. 设置域名，选择协议版本（IPv4 / IPv6 / 双栈）
+4. 保存并应用
+
+### 第三步：签发 SSL 证书
+1. 切换到 **SSL 证书** 标签页，启用 ACME
+2. 先用 Staging 模式测试
+3. 点击「立即签发 / 续期」
+4. 成功后关闭 Staging 重新签发正式证书
+
+### 第四步：配置反向代理
+1. 切换到 **反向代理** 标签页
+2. 添加规则，填写域名、目标地址和端口
+3. 启用 SSL（自动关联 ACME 证书）
+4. 保存并应用
+
+### Cloudflare API Token 创建方法
+1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/)
+2. 头像 → **My Profile** → **API Tokens** → **Create Token**
+3. 使用 **Edit zone DNS** 模板
+4. Zone Resources 选择你的域名
+5. 创建并复制 Token
+
+---
+
+## 安全特性
+
+### 域名访问限制
+安装后，反向代理自动拒绝直接使用 IP 地址访问的请求（返回 444 断开连接）。同时，每个监听端口都会生成 `default_server` 兜底规则，未配置的 Host / 子域名前缀不会落到同端口第一个反代站点。只有通过正确域名访问才能到达后端服务，这可以有效防止网络扫描器探测和域名串站。
+
+### 访客追踪
+总览页面实时显示所有通过反向代理访问的 IP 地址、归属地和在线状态，帮助你发现异常访问。
+
+---
+
+## 文件结构
+
+```
+luci-app-minigate/
+├── CONTRIBUTING.md                    # 贡献说明
+├── LICENSE                            # MIT 许可证
+├── Makefile                           # OpenWrt 编译配置
+├── README.md
+├── SECURITY.md                        # 安全报告策略
+├── install.sh                         # 一键安装脚本（兼容 opkg/apk）
+├── luasrc/
+│   ├── controller/minigate.lua        # LuCI 路由控制器
+│   ├── model/cbi/minigate/
+│   │   ├── general.lua                # 总览（含访客追踪）
+│   │   ├── ddns.lua                   # DDNS（IPv4/IPv6）
+│   │   ├── acme.lua                   # ACME 证书
+│   │   ├── proxy.lua                  # 反向代理
+│   │   └── login_guard.lua            # 登录防护
+│   └── view/minigate/log.htm          # 日志页面
+└── root/
+    ├── etc/config/minigate            # UCI 配置（含 login_guard 段）
+    ├── etc/init.d/minigate            # 服务脚本（启停含 login_guard）
+    └── usr/lib/minigate/
+        ├── ddns.sh                    # DDNS（双栈）
+        ├── acme.sh                    # 证书管理
+        ├── proxy.sh                   # 反代（IPv6+访问日志+IP拒绝）
+        └── login_guard.sh             # 登录防护 watcher + CLI
+```
+
+## 依赖
+
+- `luci-base` - LuCI Web 界面
+- `nginx-ssl` - Nginx（带 SSL 支持）
+- `openssl-util` - 证书工具
+- `wget` - 下载安装包和源码包
+- `curl` - HTTP 客户端
+- `jsonfilter` - JSON 解析
+- `coreutils-stat` - 登录防护读取计数文件更新时间
+- `nftables` - 登录防护用（OpenWrt 22.03+ / ImmortalWrt 默认已装）
+
+## 更新日志
+
+### v1.3.9
+- 修复 FanchmWrt 等 LuCI 主题使用自身深色开关时，MiniGate 仍显示白色卡片和表格的问题
+- 页面背景、文字、边框和控件改为跟随 LuCI 主题变量，同时保留系统深色模式兼容
+
+### v1.3.8
+- 调整 LuCI 深色模式配色，降低高饱和强调色和卡片边框的突兀感
+- 统一总览与登录防护页面的深色背景、文字和状态颜色
+
+### v1.3.7
+- DDNS 同步会保留一条匹配当前 IP 的 A / AAAA 记录，并删除其余同名同类型重复记录，避免旧 IP 继续参与解析
+- Cloudflare 记录查询失败时不再误判为记录不存在，避免异常新建重复 DNS 记录
+
+### v1.3.6
+- 修复 ACME 重复签发/续期失败时，即使本地已有有效证书仍把 SSL/TLS 状态误标为 `error` 的问题
+- ACME 现在会在失败但已有证书未过期时保留 `ok` 状态，并记录最近错误，避免总览页误报证书失效
+- 修复 LuCI 手动签发证书、手动同步 DDNS 时命令参数未做安全引用的问题
+- 对总览页、证书页、登录防护页中的域名、证书、访问记录、归属地等动态文本做 HTML 转义
+
+### v1.3.5
+- 修复同一监听端口下未知 Host / 任意子域名前缀会落到第一个反代站点的问题；现在会生成 `default_server` 兜底规则并直接断开
+- HTTPS 反代端口自动生成 MiniGate 默认证书用于兜底拒绝站点，避免未知 SNI 复用真实站点
+- 修复通过 MiniGate 反向代理访问 LuCI 时，登录防护页面保存设置导致当前反代连接被断开的问题
+- 登录防护页面保存设置时改为轻量重载 MiniGate，不再完整重启反代 nginx
+- 登录防护「失败计数中」新增最近访问时间，并按最新访问时间排在最前
+- 修复 OpenWrt/ImmortalWrt 编译菜单中 `luci-app-minigate` 出现两条重复选项的问题
+- Release 自动构建流程改为中文更新说明，并自动刷新安装包附件
+
+### v1.3.4
+- 🎨 修复 LuCI 白天模式下总览和登录防护页面仍显示深色卡片/表格的问题
+- 🎨 保留黑夜模式原有深色显示效果，页面会跟随系统/浏览器配色切换
+
+### v1.3.3
+- 🐛 重新生成 OpenWrt opkg 更兼容的 `.ipk` ar 归档格式，修复部分系统仍提示 `Malformed package file`
+
+### v1.3.2
+- ✨ 登录防护「失败计数中」默认显示 5 条，支持 5 / 20 / 30 条下拉切换
+- ✨ 失败计数归属地查询复用总览「访问记录」的查询方式
+- 🐛 修复失败计数文件异常时 `lg_status` 刷新卡住的问题
+
+### v1.3.1
+- 🐛 修复手工安装脚本在 OpenWrt `/bin/sh` 下目录创建失败的问题
+- 🐛 重新生成标准 `.ipk` 安装包，避免 LuCI 提示 `Malformed package file`
+
+### v1.3.0
+- ⚡ 归属地查询增加 24 小时本地缓存
+- ⚡ 缩短外部归属地接口超时时间，减少页面等待
+
+### v1.2.0
+- ✨ 新增 **登录防护 (Login Guard)** —— SSH/LuCI 失败登录达到阈值自动封禁源 IP
+- ✨ LuCI 网页：实时封禁列表 + 归属地 + 一键解封/封禁/清空
+- ✨ 持久化封禁，重启/固件升级后自动恢复
+- ✨ Watchdog 自检 nftables 资源，防 fw4 reload 后失效
+- 🔧 install.sh 自动清理旧的独立 login-guard 部署（如有）+ 迁移 bans.txt
+
+### v1.1.0
+- ✨ DDNS 支持 IPv6 / 双栈模式（A + AAAA 记录）
+- ✨ 反向代理支持 IPv6 监听
+- ✨ 总览页面新增访客追踪（IP、归属地、在线状态）
+- ✨ 归属地后端查询（解决浏览器跨域问题）
+- ✨ 直接 IP 访问拒绝（防扫描器）
+- ✨ 同时兼容 opkg（IPK）和 apk（源码安装）
+- ✨ install.sh 自动适配 opkg/apk 环境
+- 🐛 目标地址支持 IPv6 格式
+
+### v1.0.0
+- 🎉 初始版本：Cloudflare DDNS、Let's Encrypt ACME、Nginx 反向代理
+
+## 许可证
+
+MIT License
+
+

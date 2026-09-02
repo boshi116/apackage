@@ -1,9 +1,60 @@
 ## 📦 自用包自动更新
 
-- **更新时间**：2026-09-02 08:20:13
-- **更新文件数**：1
+- **更新时间**：2026-09-02 08:26:03
+- **更新文件数**：235
 - **更新插件**：
+  - `OpenAppFilter`
+  - `OpenClash`
+  - `adblock-fast`
+  - `luci-app-adblock-fast`
+  - `luci-app-adguardhome`
+  - `luci-app-advancedplus`
+  - `luci-app-argon-config`
+  - `luci-app-bandix`
+  - `luci-app-bandix-plus`
+  - `luci-app-clientstatus`
+  - `luci-app-dashboard`
+  - `luci-app-dnsfilter`
+  - `luci-app-easytier`
+  - `luci-app-eqosplus`
+  - `luci-app-harbor-file`
+  - `luci-app-ikoolproxy`
+  - `luci-app-kodexplorer`
   - `luci-app-lanspeed`
+  - `luci-app-lucky`
+  - `luci-app-minigate`
+  - `luci-app-mosdns`
+  - `luci-app-netstat`
+  - `luci-app-netwiz`
+  - `luci-app-netwizard`
+  - `luci-app-parentcontrol`
+  - `luci-app-partexp`
+  - `luci-app-pushbot`
+  - `luci-app-quickfile`
+  - `luci-app-rtbwmon`
+  - `luci-app-speedtest-web`
+  - `luci-app-sqm-controller`
+  - `luci-app-taskplan`
+  - `luci-app-tcpdump`
+  - `luci-app-timecontrol`
+  - `luci-app-timedreboot`
+  - `luci-app-traffic-statistic`
+  - `luci-app-unblockneteasemusic`
+  - `luci-app-watchdog`
+  - `luci-app-wechatpush`
+  - `luci-app-wizard`
+  - `luci-app-wrtbwmon`
+  - `luci-theme-argon`
+  - `luci-theme-noobwrt`
+  - `netspeedtest`
+  - `openwrt-bandix`
+  - `openwrt-bandix-plus`
+  - `openwrt-iptvhelper`
+  - `openwrt-passwall`
+  - `rtp2httpd`
+  - `speedtest-web`
+  - `vlmcsd`
+  - `wrtbwmon`
 
 ---
 
