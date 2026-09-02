@@ -80,7 +80,7 @@ jobs:
             echo "🔄 处理特殊仓库: jell"
             if tmpdir=$(mktemp -d); then
               if git clone --depth 1 https://github.com/kenzok8/jell "$tmpdir/jell" 2>/dev/null; then
-                for item in luci-app-aria2 luci-app-ipsec-server luci-app-pptpd webdav2 luci-app-msd_lite luci-app-onliner msd_lite unishare luci-app-unishare luci-app-rtbwmon luci-app-kodexplorer; do
+                for item in luci-app-aria2  luci-app-pptpd webdav2 luci-app-msd_lite luci-app-onliner msd_lite unishare luci-app-unishare luci-app-rtbwmon luci-app-kodexplorer; do
                   if [ -d "$tmpdir/jell/$item" ]; then
                     cp -r "$tmpdir/jell/$item" "${DOWNLOAD_DIR}/$item"
                   fi
@@ -188,6 +188,8 @@ jobs:
             git_clone "https://github.com/ZeaKyX/speedtest-web" "speedtest-web" || true
             git_clone "https://github.com/ZeaKyX/luci-app-speedtest-web" "luci-app-speedtest-web" || true
             git_clone "https://github.com/vernesong/OpenClash" "OpenClash" || true
+            git_clone "https://github.com/mgz0227/luci-app-ipsec-server" "luci-app-ipsec-server" || true
+            
           ) &
           PID3=$!
           
