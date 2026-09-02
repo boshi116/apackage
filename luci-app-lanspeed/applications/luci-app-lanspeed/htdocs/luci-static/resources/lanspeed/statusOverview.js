@@ -1,0 +1,753 @@
+'use strict';
+'require baseclass';
+'require lanspeed.format as fmt';
+'require lanspeed.rpc as lsRpc';
+'require lanspeed.statusIp as statusIp';
+'require lanspeed.statusShell as statusShell';
+'require lanspeed.statusRefresh as statusRefresh';
+'require lanspeed.statusRateMeta as statusRateMeta';
+
+var SOURCE_KEYS = [ 'status', 'clients', 'interfaces', 'uci' ];
+var LIVE_SOURCE_KEYS = [ 'status', 'clients', 'interfaces' ];
+var ACCESS_EDGE_SAMPLE_SKEW_MS = 50;
+var LIVE_RPC_TIMEOUT_MS = 2500;
+var ERROR_NOTICE_MS = 3000;
+var SOURCE_LABELS = {
+	realtime: 'realtime',
+	status: 'status',
+	clients: 'clients',
+	interfaces: 'interfaces',
+	uci: 'uci'
+};
+
+function emptySource(key) {
+	if (key === 'clients') return { clients: [] };
+	if (key === 'interfaces') return { interfaces: [] };
+	return {};
+}
+
+function sourceIsValid(key, value) {
+	if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+	if (key === 'realtime') return sourceIsValid('status', value.status) &&
+		sourceIsValid('clients', value.clients) && sourceIsValid('interfaces', value.interfaces);
+	if (key === 'clients') return Array.isArray(value.clients);
+	if (key === 'interfaces') return Array.isArray(value.interfaces);
+	return true;
+}
+
+function invalidResponseError(key) {
+	var error = new Error('Invalid ' + SOURCE_LABELS[key] + ' response');
+	error.code = 'INVALID_RESPONSE';
+	return error;
+}
+
+function errorObject(error) {
+	if (error instanceof Error) return error;
+	var wrapped = new Error(error && error.message
+		? String(error.message)
+		: (error === undefined || error === null ? 'Unknown RPC failure' : String(error)));
+	if (error && typeof error === 'object' && error.code !== undefined)
+		wrapped.code = error.code;
+	return wrapped;
+}
+
+function hasPreviousSuccess(previous, key) {
+	var state = previous && previous.rpc && previous.rpc[key];
+	return !!(state && (state.ok === true || Number(state.lastSuccessAt) > 0));
+}
+
+function previousValue(previous, key) {
+	if (previous && previous[key] !== undefined && previous[key] !== null)
+		return previous[key];
+	return emptySource(key);
+}
+
+function sampleClock(value) {
+	if (value === undefined || value === null || value === '') return null;
+	var clock = Number(value);
+	return isFinite(clock) && clock >= 0 ? clock : null;
+}
+
+function maxSampleClock(items) {
+	var latest = null;
+	(items || []).forEach(function(item) {
+		var clock = sampleClock(item && item.sample_ms);
+		if (clock !== null && (latest === null || clock > latest)) latest = clock;
+	});
+	return latest;
+}
+
+function maxRateMetaClock(items) {
+	var latest = null;
+	(items || []).forEach(function(item) {
+		var meta = item && item.rate_meta;
+		[ meta && meta.tx, meta && meta.rx ].forEach(function(direction) {
+			var clock = sampleClock(direction && direction.sample_ms);
+			if (clock !== null && (latest === null || clock > latest)) latest = clock;
+		});
+	});
+	return latest;
+}
+
+function collectorEvidence(data) {
+	var evidence = data && data.evidence || {};
+	return {
+		evidence: evidence,
+		collector: evidence.effective_collector ||
+			(evidence.collector && evidence.collector.primary_source) || ''
+	};
+}
+
+function collectorSampleClock(data) {
+	var source = collectorEvidence(data);
+	var evidence = source.evidence;
+	if (source.collector === 'nss_ecm_bpf') {
+		var published = sampleClock(evidence.ecm_bpf_rate_window &&
+			evidence.ecm_bpf_rate_window.window_end_ms);
+		return published !== null ? published
+			: sampleClock(evidence.ecm_bpf && evidence.ecm_bpf.sample_ms);
+	}
+	if (source.collector === 'nss_ecm_node')
+		return sampleClock(evidence.nss_window && evidence.nss_window.window_end_ms);
+	if (source.collector === 'bpf')
+		return sampleClock(evidence.bpf && evidence.bpf.last_complete_snapshot_ms);
+	return null;
+}
+
+function statusBatch(data) {
+	var edgeActive = fmt.nssPlatform(data) && String(data && data.access_edge_mode || '') === 'active';
+	var routedInternet = fmt.nssPlatform(data) && String(data && data.internet_view_mode || '') === 'routed';
+	var edgeSample = sampleClock(data && data.evidence && data.evidence.access_edge &&
+		data.evidence.access_edge.sample_ms);
+	return {
+		// Explicit routed view owns its FastN+FastS clock; Access Edge is only a
+		// background verifier and must not gate or relabel that view.
+		sampleMs: routedInternet ? null : edgeSample !== null ? edgeSample :
+			(edgeActive ? null : collectorSampleClock(data)),
+		hasCoverage: !!(data && data.coverage && typeof data.coverage === 'object')
+	};
+}
+
+function clientBatch(data, status) {
+	data = data || {};
+	var source = collectorEvidence(data);
+	var nssPlatform = fmt.nssPlatform(status);
+	var collector = source.collector;
+	if (!nssPlatform && (collector === 'nss_ecm_node' || collector === 'nss_ecm_bpf'))
+		collector = 'bpf';
+	var evidenceClock = collectorSampleClock(data);
+	var routedInternet = nssPlatform && String(status && status.internet_view_mode || '') === 'routed';
+	var edgeActive = nssPlatform && String(status && status.access_edge_mode || '') === 'active' && !routedInternet;
+	var edgeClock = edgeActive ? sampleClock(data.evidence && data.evidence.access_edge &&
+		data.evidence.access_edge.sample_ms) : null;
+
+	var rateModes = nssPlatform
+		? { access_edge: true, bpf: true, nss_ecm_node: true, nss_ecm_bpf: true }
+		: { bpf: true };
+	var rows = Array.isArray(data.clients) ? data.clients : [];
+	var rateRows = rows.filter(function(item) {
+		var mode = String(item && item.collector_mode || '');
+		if (routedInternet) {
+			return !!statusRateMeta.routedCollector(item && item.rate_meta);
+		}
+		// rate_meta is authoritative while active Access Edge owns the total.
+		// Accept it during a rolling daemon/LuCI upgrade even if a response still
+		// carries the identity's old conntrack/NSS collector_mode.
+		if (edgeActive)
+			return mode === 'access_edge' || !!(item && item.rate_meta);
+		return collector ? mode === collector : rateModes[mode] === true;
+	});
+	return {
+		sampleMs: edgeClock !== null ? edgeClock : routedInternet
+			? maxRateMetaClock(rateRows)
+			: (evidenceClock !== null ? evidenceClock : maxSampleClock(rateRows)),
+		hasRates: rateRows.length > 0
+	};
+}
+
+function interfaceBatch(data) {
+	data = data || {};
+	var clock = sampleClock(data.monotonic_ms);
+	return clock !== null ? clock : maxSampleClock(data.interfaces);
+}
+
+function livePair(data) {
+	var status = statusBatch(data && data.status);
+	var clients = clientBatch(data && data.clients, data && data.status);
+	var interfaces = interfaceBatch(data && data.interfaces);
+	var clocks = [ status.sampleMs, clients.sampleMs, interfaces ].filter(function(value) {
+		return value !== null;
+	});
+	var comparable = clocks.length > 1;
+	var nssStatus = data && data.status;
+	var routedInternet = fmt.nssPlatform(nssStatus) && String(nssStatus && nssStatus.internet_view_mode || '') === 'routed';
+	var edgeActive = fmt.nssPlatform(nssStatus) && String(nssStatus && nssStatus.access_edge_mode || '') === 'active' && !routedInternet;
+	var skew = edgeActive ? ACCESS_EDGE_SAMPLE_SKEW_MS : routedInternet ? 2500 : 0;
+	var aligned = !comparable || clocks.every(function(value) {
+		return Math.abs(value - clocks[0]) <= skew;
+	});
+	return {
+		coverageSampleMs: status.sampleMs,
+		clientSampleMs: clients.sampleMs,
+		interfaceSampleMs: interfaces,
+		sampleMs: aligned ? (interfaces !== null ? interfaces :
+			(clients.sampleMs !== null ? clients.sampleMs : status.sampleMs)) : null,
+		aligned: comparable ? aligned : null,
+		hasCoverage: status.hasCoverage,
+		hasClientRates: clients.hasRates,
+		retained: false
+	};
+}
+
+function nssAccessEdgeRenderable(data, pair) {
+	return fmt.nssPlatform(data && data.status) &&
+		String(data && data.status && data.status.access_edge_mode || '') === 'active' &&
+		String(data && data.status && data.status.internet_view_mode || '') !== 'routed' &&
+		pair && pair.hasClientRates === true;
+}
+
+/* Legacy daemons expose three live calls which can straddle publication. */
+function alignLiveSamples(next, previous) {
+	var pair = livePair(next);
+	if (pair.aligned !== false) {
+		next.livePair = pair;
+		return next;
+	}
+
+	var oldPair = previous && previous.livePair || livePair(previous);
+	var canRetain = !!(previous && oldPair.aligned !== false);
+	var renderColdNssEdge = !canRetain && nssAccessEdgeRenderable(next, pair);
+	if (canRetain) {
+		next.status = previousValue(previous, 'status');
+		next.clients = previousValue(previous, 'clients');
+		next.interfaces = previousValue(previous, 'interfaces');
+	}
+	else if (!renderColdNssEdge) {
+		var status = Object.assign({}, next.status || {});
+		status.coverage = null;
+		next.status = status;
+		next.clients = emptySource('clients');
+		next.interfaces = emptySource('interfaces');
+	}
+	var visiblePair = renderColdNssEdge ? pair : oldPair;
+	next.livePair = {
+		coverageSampleMs: visiblePair.coverageSampleMs,
+		clientSampleMs: visiblePair.clientSampleMs,
+		interfaceSampleMs: visiblePair.interfaceSampleMs,
+		sampleMs: visiblePair.sampleMs,
+		aligned: visiblePair.aligned,
+		hasCoverage: visiblePair.hasCoverage,
+		hasClientRates: visiblePair.hasClientRates,
+		retained: canRetain,
+		renderable: renderColdNssEdge,
+		pendingCoverageSampleMs: pair.coverageSampleMs,
+		pendingClientSampleMs: pair.clientSampleMs,
+		pendingInterfaceSampleMs: pair.interfaceSampleMs
+	};
+	return next;
+}
+
+function sourceSettled(key, loader, previous, clock, timeoutMs) {
+	var startedAt = clock();
+	var requestedTimeout = Number(timeoutMs);
+	var timeout = isFinite(requestedTimeout) && requestedTimeout > 0
+		? requestedTimeout : LIVE_RPC_TIMEOUT_MS;
+	return new Promise(function(resolve) {
+		var settled = false;
+		var timer = setTimeout(function() {
+			var error = new Error('实时数据请求超时: ' + key);
+			error.code = 'TIMEOUT';
+			finishError(error);
+		}, timeout);
+
+		function finish(result) {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			resolve(result);
+		}
+
+		function finishError(error) {
+			var checkedAt = clock();
+			var old = previous && previous.rpc && previous.rpc[key];
+			var retained = hasPreviousSuccess(previous, key);
+			finish({
+				key: key,
+				value: retained ? previousValue(previous, key) : emptySource(key),
+				rpc: {
+					ok: false,
+					retained: retained,
+					error: errorObject(error),
+					checkedAt: checkedAt >= startedAt ? checkedAt : startedAt,
+					lastSuccessAt: retained && old ? Number(old.lastSuccessAt) || 0 : 0
+				}
+			});
+		}
+
+		Promise.resolve().then(loader).then(function(value) {
+			try {
+				if (!sourceIsValid(key, value)) throw invalidResponseError(key);
+				var checkedAt = clock();
+				finish({
+					key: key,
+					value: value,
+					rpc: {
+						ok: true,
+						retained: false,
+						error: null,
+						checkedAt: checkedAt >= startedAt ? checkedAt : startedAt,
+						lastSuccessAt: checkedAt >= startedAt ? checkedAt : startedAt
+					}
+				});
+			} catch (error) {
+				finishError(error);
+			}
+		}, finishError);
+	});
+}
+
+function aggregateResults(results, checkedAt) {
+	var data = { status: {}, clients: { clients: [] }, interfaces: { interfaces: [] }, uci: {} };
+	var rpc = {};
+	(results || []).forEach(function(result) {
+		data[result.key] = result.value;
+		rpc[result.key] = result.rpc;
+		if (result.rpc && result.rpc.checkedAt > checkedAt)
+			checkedAt = result.rpc.checkedAt;
+	});
+	return normalizeData({
+		status: data.status,
+		clients: data.clients,
+		interfaces: data.interfaces,
+		uci: data.uci,
+		rpc: rpc,
+		checkedAt: checkedAt
+	});
+}
+
+function loadUiConfig() {
+	return lsRpc.uciGet('lanspeed', 'main');
+}
+
+function loadLegacy(previous, clock, timeoutMs) {
+	clock = clock || function() { return Date.now(); };
+	var loaders = {
+		status: function() { return lsRpc.status(); },
+		clients: function() { return lsRpc.clients(); },
+		interfaces: function() { return lsRpc.interfaces(); },
+		uci: loadUiConfig
+	};
+	var startedAt = clock();
+	return Promise.all(SOURCE_KEYS.map(function(key) {
+		return sourceSettled(key, loaders[key], previous, clock, timeoutMs);
+	})).then(function(results) {
+		var next = aggregateResults(results, startedAt);
+		var pair = livePair(next);
+		var liveSucceeded = LIVE_SOURCE_KEYS.every(function(key) {
+			return next.rpc[key] && next.rpc[key].ok === true;
+		});
+		if (pair.aligned !== false || !liveSucceeded || nssAccessEdgeRenderable(next, pair))
+			return alignLiveSamples(next, previous);
+
+		/* Every collector can publish between the three live RPC replies. Retry the
+		 * cheap snapshot reads once so an initial boundary split is not rendered as
+		 * an empty page. UCI is retained from the first round. */
+		var uciResult = results.filter(function(result) { return result.key === 'uci'; })[0];
+		return Promise.all(LIVE_SOURCE_KEYS.map(function(key) {
+			return sourceSettled(key, loaders[key], next, clock, timeoutMs);
+		})).then(function(retried) {
+			if (uciResult) retried.push(uciResult);
+			var recovered = aggregateResults(retried, startedAt);
+			return alignLiveSamples(recovered, previous);
+		});
+	});
+}
+
+function cachedUci(previous, clock, timeoutMs) {
+	if (!hasPreviousSuccess(previous, 'uci'))
+		return sourceSettled('uci', loadUiConfig, previous, clock, timeoutMs);
+	var old = previous.rpc.uci || {};
+	var checkedAt = clock();
+	return Promise.resolve({
+		key: 'uci',
+		value: previousValue(previous, 'uci'),
+		rpc: {
+			ok: true,
+			retained: false,
+			cached: true,
+			error: null,
+			checkedAt: checkedAt,
+			lastSuccessAt: Number(old.lastSuccessAt) || checkedAt
+		}
+	});
+}
+
+function bundledResult(key, bundle, realtimeResult) {
+	return {
+		key: key,
+		value: bundle[key],
+		rpc: Object.assign({}, realtimeResult.rpc)
+	};
+}
+
+function loadRealtime(previous, clock, timeoutMs) {
+	var startedAt = clock();
+	return Promise.all([
+		sourceSettled('realtime', function() { return lsRpc.realtime(); },
+			previous, clock, timeoutMs),
+		cachedUci(previous, clock, timeoutMs)
+	]).then(function(results) {
+		var realtimeResult = results[0];
+		if (!realtimeResult.rpc.ok)
+			return loadLegacy(previous, clock, timeoutMs);
+		var bundle = realtimeResult.value;
+		var next = aggregateResults([
+			bundledResult('status', bundle, realtimeResult),
+			bundledResult('clients', bundle, realtimeResult),
+			bundledResult('interfaces', bundle, realtimeResult),
+			results[1]
+		], startedAt);
+		return alignLiveSamples(next, previous);
+	});
+}
+
+function loadAll(previous, clock, timeoutMs) {
+	clock = clock || function() { return Date.now(); };
+	return typeof lsRpc.realtime === 'function'
+		? loadRealtime(previous, clock, timeoutMs)
+		: loadLegacy(previous, clock, timeoutMs);
+}
+
+function normalizeData(data) {
+	data = data || {};
+	var uciMain = data.uci || data[3] || {};
+	var status = data.status || {};
+	var clients = data.clients || { clients: [] };
+	var interfaces = data.interfaces || { interfaces: [] };
+	var rpc = data.rpc || {};
+	var failed = SOURCE_KEYS.filter(function(key) {
+		return rpc[key] && rpc[key].ok === false;
+	});
+	var hardFailure = failed.length === SOURCE_KEYS.length && failed.every(function(key) {
+		return !rpc[key].retained;
+	});
+	var firstError = null;
+	failed.some(function(key) {
+		if (rpc[key].error) { firstError = rpc[key].error; return true; }
+		return false;
+	});
+
+	return {
+		status: status,
+		clients: clients,
+		interfaces: interfaces,
+		uci: uciMain,
+		showClientStatus: uciMain.show_client_status === '1',
+		showIpv6: uciMain.show_ipv6 !== '0',
+		hidePrivateIpv6: uciMain.hide_private_ipv6 === '1',
+		hideIpv6Ranges: statusIp.hideIpv6RangesValue(uciMain.hide_ipv6_ranges),
+		rpc: rpc,
+		checkedAt: Number(data.checkedAt) || 0,
+		error: firstError,
+		degraded: failed.length > 0 && !hardFailure,
+		hardFailure: hardFailure,
+		livePair: data.livePair || null
+	};
+}
+
+function snapshot(viewState) {
+	return {
+		status: viewState.status || {},
+		clients: viewState.clients || { clients: [] },
+		interfaces: viewState.interfaces || { interfaces: [] },
+		uci: viewState.uci || {},
+		rpc: viewState.rpc || {},
+		livePair: viewState.livePair || null
+	};
+}
+
+function failureData(previous, error, clock) {
+	var at = clock();
+	var next = aggregateResults(SOURCE_KEYS.map(function(key) {
+		var old = previous && previous.rpc && previous.rpc[key];
+		var retained = hasPreviousSuccess(previous, key);
+		return {
+			key: key,
+			value: retained ? previousValue(previous, key) : emptySource(key),
+			rpc: {
+				ok: false,
+				retained: retained,
+				error: errorObject(error),
+				checkedAt: at,
+				lastSuccessAt: retained && old ? Number(old.lastSuccessAt) || 0 : 0
+			}
+		};
+	}), at);
+	return alignLiveSamples(next, previous);
+}
+
+function createController(viewState, options) {
+	options = options || {};
+	var hostWindow = options.window || (typeof window !== 'undefined' ? window : null);
+	var eventTarget = options.eventTarget || hostWindow;
+	var timerApi = options.timerApi || hostWindow || {};
+	var hostDocument = options.document || (typeof document !== 'undefined' ? document : null);
+	var visibilityTarget = options.visibilityTarget || hostDocument;
+	var Observer = options.MutationObserver || (hostWindow && hostWindow.MutationObserver) ||
+		(typeof MutationObserver !== 'undefined' ? MutationObserver : null);
+	var clock = options.now || function() { return Date.now(); };
+	var loader = options.load || function(previous) { return loadAll(previous, clock); };
+	var pending = null;
+	var requestSeq = 0;
+	var timer = null;
+	var noticeTimer = null;
+	var destroyed = false;
+	var root = null;
+	var observer = null;
+	var connected = false;
+
+	function refresh(busyOnly) {
+		if (busyOnly && typeof viewState.refreshBusy === 'function') viewState.refreshBusy();
+		else if (typeof viewState.refreshLive === 'function') viewState.refreshLive();
+	}
+
+	function stopTimer() {
+		if (timer !== null && typeof timerApi.clearTimeout === 'function')
+			timerApi.clearTimeout(timer);
+		timer = null;
+	}
+
+	function clearErrorNoticeTimer() {
+		if (noticeTimer !== null && typeof timerApi.clearTimeout === 'function')
+			timerApi.clearTimeout(noticeTimer);
+		noticeTimer = null;
+	}
+
+	function scheduleErrorNoticeHide() {
+		clearErrorNoticeTimer();
+		if (!viewState.errorNoticeUntil || typeof timerApi.setTimeout !== 'function') return;
+		var delay = Math.max(0, Number(viewState.errorNoticeUntil) - clock());
+		noticeTimer = timerApi.setTimeout(function() {
+			noticeTimer = null;
+			viewState.errorNoticeVisible = false;
+			if (!destroyed) refresh(true);
+		}, delay);
+	}
+
+	function triggerErrorNotice() {
+		viewState.errorNoticeVisible = true;
+		viewState.errorNoticeUntil = clock() + ERROR_NOTICE_MS;
+		scheduleErrorNoticeHide();
+	}
+
+	function visibilityChanged() {
+		var hidden = visibilityTarget &&
+			(visibilityTarget.hidden === true || visibilityTarget.visibilityState === 'hidden');
+		if (hidden) {
+			clearErrorNoticeTimer();
+			viewState.errorNoticeVisible = false;
+			viewState.errorNoticeUntil = 0;
+			if (viewState.refs) refresh(true);
+			return;
+		}
+		if (viewState.errorNoticeSignature) {
+			triggerErrorNotice();
+			if (viewState.refs) refresh(true);
+		}
+	}
+
+	function schedule(anchorAt) {
+		stopTimer();
+		if (destroyed || pending || (viewState.prefs && viewState.prefs.paused)) return;
+		var interval = typeof fmt.effectiveRefreshMs === 'function'
+			? fmt.effectiveRefreshMs(viewState.status, viewState.prefs)
+			: Math.max(fmt.MIN_REFRESH_MS,
+				Number(viewState.prefs && viewState.prefs.refreshMs) || fmt.MIN_REFRESH_MS);
+		var now = clock();
+		var anchor = Number(anchorAt);
+		if (!isFinite(anchor) || anchor < 0 || anchor > now)
+			anchor = now;
+		var delay = Math.max(0, interval - Math.max(0, now - anchor));
+		if (typeof timerApi.setTimeout !== 'function') return;
+		timer = timerApi.setTimeout(function() {
+			timer = null;
+			reload(false);
+		}, delay);
+	}
+
+	function apply(next) {
+		var normalized = normalizeData(next);
+		viewState.status = normalized.status;
+		viewState.clients = normalized.clients;
+		viewState.interfaces = normalized.interfaces;
+		viewState.uci = normalized.uci;
+		viewState.showClientStatus = normalized.showClientStatus;
+		viewState.showClientControl = true;
+		viewState.showIpv6 = normalized.showIpv6;
+		viewState.hidePrivateIpv6 = normalized.hidePrivateIpv6;
+		viewState.hideIpv6Ranges = normalized.hideIpv6Ranges;
+		viewState.rpc = normalized.rpc;
+		viewState.checkedAt = normalized.checkedAt;
+		viewState.error = normalized.error;
+		viewState.degraded = normalized.degraded;
+		viewState.hardFailure = normalized.hardFailure;
+		viewState.livePair = normalized.livePair;
+		return normalized;
+	}
+
+	function reload(manual) {
+		if (destroyed) return Promise.resolve(null);
+		if (pending) {
+			if (manual) {
+				viewState.manualBusy = true;
+				refresh(true);
+			}
+			return pending;
+		}
+
+		stopTimer();
+		var startedAt = clock();
+		var sequence = ++requestSeq;
+		viewState.loading = true;
+		viewState.manualBusy = manual === true;
+		refresh(true);
+		var previous = snapshot(viewState);
+		var request = Promise.resolve().then(function() {
+			return loader(previous);
+		});
+		pending = request.then(function(next) {
+			if (sequence !== requestSeq || destroyed) return next;
+			return apply(next);
+		}, function(error) {
+			var next = failureData(previous, error, clock);
+			if (sequence !== requestSeq || destroyed) return next;
+			return apply(next);
+		}).then(function(next) {
+			if (sequence === requestSeq && !destroyed) {
+				viewState.loading = false;
+				viewState.manualBusy = false;
+				pending = null;
+				refresh();
+				schedule(startedAt);
+			}
+			return next;
+		});
+		return pending;
+	}
+
+	function destroy() {
+		if (destroyed) return;
+		destroyed = true;
+		requestSeq++;
+		stopTimer();
+		clearErrorNoticeTimer();
+		pending = null;
+		if (observer && typeof observer.disconnect === 'function') observer.disconnect();
+		observer = null;
+		if (eventTarget && typeof eventTarget.removeEventListener === 'function') {
+			eventTarget.removeEventListener('pagehide', destroy);
+			eventTarget.removeEventListener('beforeunload', destroy);
+		}
+		if (visibilityTarget && typeof visibilityTarget.removeEventListener === 'function')
+			visibilityTarget.removeEventListener('visibilitychange', visibilityChanged);
+		viewState.destroyed = true;
+	}
+
+	function attachRoot(nextRoot) {
+		root = nextRoot;
+		if (!root) return;
+		if (Observer && hostDocument && hostDocument.body) {
+			observer = new Observer(function() {
+				if (root && root.isConnected) connected = true;
+				else if (connected) destroy();
+			});
+			observer.observe(hostDocument.body, { childList: true, subtree: true });
+		}
+	}
+
+	if (eventTarget && typeof eventTarget.addEventListener === 'function') {
+		eventTarget.addEventListener('pagehide', destroy);
+		eventTarget.addEventListener('beforeunload', destroy);
+	}
+	if (visibilityTarget && typeof visibilityTarget.addEventListener === 'function')
+		visibilityTarget.addEventListener('visibilitychange', visibilityChanged);
+
+	viewState.stopTimer = stopTimer;
+	viewState.clearErrorNoticeTimer = clearErrorNoticeTimer;
+	viewState.triggerErrorNotice = triggerErrorNotice;
+	viewState.schedule = schedule;
+	viewState.reload = reload;
+	viewState.destroy = destroy;
+	viewState.attachRoot = attachRoot;
+	viewState.isDestroyed = function() { return destroyed; };
+	return {
+		reload: reload,
+		schedule: schedule,
+		stopTimer: stopTimer,
+		destroy: destroy,
+		attachRoot: attachRoot,
+		getPending: function() { return pending; },
+		isDestroyed: function() { return destroyed; }
+	};
+}
+
+return baseclass.extend({
+	load: function() {
+		return loadAll(null).catch(function(error) {
+			return failureData(null, error, function() { return Date.now(); });
+		});
+	},
+
+	render: function(data) {
+		var normalized = normalizeData(data);
+		var viewState = {
+			status: normalized.status,
+			clients: normalized.clients,
+			interfaces: normalized.interfaces,
+			uci: normalized.uci,
+			showClientStatus: normalized.showClientStatus,
+			showClientControl: true,
+			showIpv6: normalized.showIpv6,
+			hidePrivateIpv6: normalized.hidePrivateIpv6,
+				hideIpv6Ranges: normalized.hideIpv6Ranges,
+				rpc: normalized.rpc,
+				checkedAt: normalized.checkedAt,
+				error: normalized.error,
+				degraded: normalized.degraded,
+				hardFailure: normalized.hardFailure,
+				livePair: normalized.livePair,
+				filter: '',
+			page: 1,
+			loading: false,
+				manualBusy: false,
+				prefs: fmt.loadPrefs(),
+				refs: null
+			};
+			viewState.refreshLive = function() {
+				return statusRefresh.refreshLive(viewState);
+			};
+			viewState.refreshBusy = function() {
+				return statusRefresh.refreshAvailability(viewState, viewState.refs);
+			};
+			var controller = createController(viewState);
+			var built = statusShell.buildShell(viewState);
+			viewState.refs = built.refs;
+			if (viewState.attachRoot) viewState.attachRoot(built.root);
+			viewState.refreshLive();
+		viewState.schedule();
+		return built.root;
+	},
+
+	createController: createController,
+	normalizeData: normalizeData,
+	loadAll: loadAll,
+	loadLegacy: loadLegacy,
+	statusBatch: statusBatch,
+	clientBatch: clientBatch,
+	interfaceBatch: interfaceBatch,
+	alignLiveSamples: alignLiveSamples,
+
+	handleSave: null,
+	handleSaveApply: null,
+	handleReset: null
+});
