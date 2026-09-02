@@ -279,7 +279,7 @@ jobs:
             git_clone "https://github.com/gaoyaxuan/luci-app-pushbot" "luci-app-pushbot"
             git_clone "https://github.com/nooblk-98/luci-app-netstat" "luci-app-netstat"
             git_clone "https://github.com/nooblk-98/luci-theme-noobwrt" "luci-theme-noobwrt"
-            #git_clone "https://github.com/qimaoww/luci-app-lanspeed" "luci-app-lanspeed"
+            git_clone "https://github.com/qimaoww/luci-app-lanspeed" "luci-app-lanspeed"
             git_clone "https://github.com/Natduki/luci-app-sqm-controller" "luci-app-sqm-controller"
             git_clone "https://github.com/kenzok78/luci-app-adguardhome" "luci-app-adguardhome"
             git_clone "https://github.com/pymumu/luci-app-smartdns" "luci-app-smartdns"
