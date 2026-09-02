@@ -47,174 +47,95 @@ jobs:
           set -uo pipefail
           
           DOWNLOAD_DIR=$(mktemp -d)
-          SUCCESS_COUNT=0
-          FAILED_DOWNLOADS=""
-          TOTAL_DOWNLOADS=0
+          trap "rm -rf $DOWNLOAD_DIR" EXIT
           
-          cleanup() {
-            rm -rf "$DOWNLOAD_DIR"
-          }
-          trap cleanup EXIT
-          
-          # 优化的克隆函数，带重试和验证
           git_clone() {
             local repo="$1"
             local dir="$2"
             local target="${DOWNLOAD_DIR}/${dir}"
-            local max_retries=2
-            local retry=0
-            
-            TOTAL_DOWNLOADS=$((TOTAL_DOWNLOADS + 1))
-            
-            while [ $retry -lt $max_retries ]; do
-              echo "🔄 正在克隆: $dir (尝试 $((retry+1))/$max_retries)"
-              
-              # 清除可能存在的旧目录
-              rm -rf "$target"
-              
-              if git clone --depth 1 --single-branch "$repo" "$target" 2>&1; then
-                # 验证下载是否完整
-                if [ -d "$target" ] && [ "$(ls -A "$target" 2>/dev/null)" ] && [ "$(find "$target" -type f 2>/dev/null | wc -l)" -gt 0 ]; then
-                  local file_count=$(find "$target" -type f 2>/dev/null | wc -l)
-                  echo "✅ 成功克隆: $dir ($file_count 个文件)"
-                  SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
-                  return 0
-                else
-                  echo "⚠️ 警告: $dir 目录为空，重试..."
-                fi
-              else
-                echo "⚠️ 克隆 $dir 失败，重试..."
-              fi
-              
-              retry=$((retry+1))
-              rm -rf "$target"
-              
-              if [ $retry -lt $max_retries ]; then
-                echo "⏳ 等待 3 秒后重试..."
-                sleep 3
-              fi
-            done
-            
-            echo "❌ 克隆 $dir 最终失败"
-            FAILED_DOWNLOADS="${FAILED_DOWNLOADS}\n  - $dir ($repo)"
-            return 1
+            echo "🔄 正在克隆: $dir"
+            if git clone --depth 1 "$repo" "$target" 2>&1; then
+              echo "✅ 成功克隆: $dir"
+              return 0
+            else
+              echo "⚠️ 警告: 克隆 $dir 失败，跳过"
+              return 1
+            fi
           }
           
-          # 特殊仓库处理函数
           special_downloads() {
             echo "🔄 处理特殊仓库: vlmcsd"
             if tmpdir=$(mktemp -d); then
               if git clone --depth 1 https://github.com/gaoderby/luci-app-kms "$tmpdir/kms" 2>/dev/null; then
-                if [ -d "$tmpdir/kms/luci/applications/luci-app-vlmcsd" ]; then
-                  cp -r "$tmpdir/kms/luci/applications/luci-app-vlmcsd" "${DOWNLOAD_DIR}/luci-app-vlmcsd" 2>/dev/null
-                  echo "✅ 成功处理: luci-app-vlmcsd"
-                  SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
-                fi
-                if [ -d "$tmpdir/kms/package/network/vlmcsd" ]; then
-                  cp -r "$tmpdir/kms/package/network/vlmcsd" "${DOWNLOAD_DIR}/vlmcsd" 2>/dev/null
-                  echo "✅ 成功处理: vlmcsd"
-                  SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
-                fi
+                cp -r "$tmpdir/kms/luci/applications/luci-app-vlmcsd" "${DOWNLOAD_DIR}/luci-app-vlmcsd" 2>/dev/null || true
+                cp -r "$tmpdir/kms/package/network/vlmcsd" "${DOWNLOAD_DIR}/vlmcsd" 2>/dev/null || true
+                echo "✅ 成功处理: vlmcsd"
               else
                 echo "⚠️ 警告: 处理 vlmcsd 失败"
-                FAILED_DOWNLOADS="${FAILED_DOWNLOADS}\n  - vlmcsd"
               fi
               rm -rf "$tmpdir"
+
             fi
             
             echo "🔄 处理特殊仓库: jell"
             if tmpdir=$(mktemp -d); then
               if git clone --depth 1 https://github.com/kenzok8/jell "$tmpdir/jell" 2>/dev/null; then
-                local jell_items="luci-app-aria2 luci-app-ipsec-server luci-app-pptpd webdav2 luci-app-msd_lite luci-app-onliner msd_lite unishare luci-app-unishare luci-app-rtbwmon luci-app-kodexplorer"
-                local jell_success=0
-                
-                for item in $jell_items; do
+                for item in luci-app-aria2 luci-app-ipsec-server luci-app-pptpd webdav2 luci-app-msd_lite luci-app-onliner msd_lite unishare luci-app-unishare luci-app-rtbwmon luci-app-kodexplorer; do
                   if [ -d "$tmpdir/jell/$item" ]; then
-                    cp -r "$tmpdir/jell/$item" "${DOWNLOAD_DIR}/$item" 2>/dev/null
-                    echo "  ✅ 复制: $item"
-                    jell_success=$((jell_success + 1))
-                  else
-                    echo "  ⚠️ 未找到: $item"
+                    cp -r "$tmpdir/jell/$item" "${DOWNLOAD_DIR}/$item"
                   fi
                 done
-                
-                if [ $jell_success -gt 0 ]; then
-                  echo "✅ 成功处理 jell ($jell_success 个项目)"
-                  SUCCESS_COUNT=$((SUCCESS_COUNT + jell_success))
-                else
-                  echo "⚠️ 警告: jell 中未找到任何项目"
-                  FAILED_DOWNLOADS="${FAILED_DOWNLOADS}\n  - jell"
-                fi
+                echo "✅ 成功处理: jell"
               else
                 echo "⚠️ 警告: 处理 jell 失败"
-                FAILED_DOWNLOADS="${FAILED_DOWNLOADS}\n  - jell"
               fi
               rm -rf "$tmpdir"
-            fi
+              
+             fi
 
-            echo "🔄 处理特殊仓库: adblock-fast + luci-app-adblock-fast"
+            echo "🔄 处理特殊仓库: adblock‑fast + luci‑app‑adblock‑fast (openwrt‑24.10 sparse-checkout)"
             if tmpdir=$(mktemp -d); then
                 backend_ok=0
                 luci_ok=0
 
-                # 后端 adblock-fast
-                echo "  下载后端 adblock-fast..."
+                #===== 后端 adblock‑fast packages/net/adblock‑fast =====
                 mkdir -p "$tmpdir/packages"
                 pushd "$tmpdir/packages" >/dev/null
                 git init
                 git remote add origin https://github.com/openwrt/packages
                 git config core.sparseCheckout true
                 echo "net/adblock-fast" >> .git/info/sparse-checkout
-                
-                # 检查分支是否存在
-                if git ls-remote --heads origin openwrt-24.10 | grep -q openwrt-24.10; then
-                  git pull --depth 1 origin openwrt-24.10 2>/dev/null
-                else
-                  echo "  ⚠️ openwrt-24.10 分支不存在，尝试 master"
-                  git pull --depth 1 origin master 2>/dev/null
-                fi
+                git pull --depth 1 origin openwrt-24.10 2>/dev/null
                 popd >/dev/null
 
-                if [ -d "$tmpdir/packages/net/adblock-fast" ] && [ -f "$tmpdir/packages/net/adblock-fast/Makefile" ]; then
-                    cp -r "$tmpdir/packages/net/adblock-fast" "${DOWNLOAD_DIR}/adblock-fast" 2>/dev/null
+                if [ -d "$tmpdir/packages/net/adblock-fast" ];then
+                    cp -r "$tmpdir/packages/net/adblock-fast" "${DOWNLOAD_DIR}/adblock-fast" 2>/dev/null || true
                     backend_ok=1
-                    echo "  ✅ 后端 adblock-fast 复制完成"
-                    SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+                    echo "✅ 后端 adblock‑fast 复制完成"
                 else
-                    echo "  ❌ 获取 adblock-fast 后端失败"
-                    FAILED_DOWNLOADS="${FAILED_DOWNLOADS}\n  - adblock-fast (backend)"
+                    echo "⚠️ 警告: 获取 adblock‑fast 后端失败"
                 fi
 
-                # 前端 luci-app-adblock-fast
-                echo "  下载前端 luci-app-adblock-fast..."
+                #===== 前端 luci‑app‑adblock‑fast applications/luci‑app‑adblock‑fast =====
                 mkdir -p "$tmpdir/luci"
                 pushd "$tmpdir/luci" >/dev/null
                 git init
                 git remote add origin https://github.com/openwrt/luci
                 git config core.sparseCheckout true
                 echo "applications/luci-app-adblock-fast" >> .git/info/sparse-checkout
-                
-                # 检查分支是否存在
-                if git ls-remote --heads origin openwrt-24.10 | grep -q openwrt-24.10; then
-                  git pull --depth 1 origin openwrt-24.10 2>/dev/null
-                else
-                  echo "  ⚠️ openwrt-24.10 分支不存在，尝试 master"
-                  git pull --depth 1 origin master 2>/dev/null
-                fi
+                git pull --depth 1 origin openwrt-24.10 2>/dev/null
                 popd >/dev/null
 
-                if [ -d "$tmpdir/luci/applications/luci-app-adblock-fast" ] && [ -f "$tmpdir/luci/applications/luci-app-adblock-fast/Makefile" ]; then
-                    cp -r "$tmpdir/luci/applications/luci-app-adblock-fast" "${DOWNLOAD_DIR}/luci-app-adblock-fast" 2>/dev/null
+                if [ -d "$tmpdir/luci/applications/luci-app-adblock-fast" ];then
+                    cp -r "$tmpdir/luci/applications/luci-app-adblock-fast" "${DOWNLOAD_DIR}/luci-app-adblock-fast" 2>/dev/null || true
                     luci_ok=1
-                    echo "  ✅ 前端 luci-app-adblock-fast 复制完成"
-                    SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+                    echo "✅ 界面 luci‑app‑adblock‑fast 复制完成"
                 else
-                    echo "  ❌ 获取 luci-app-adblock-fast 前端失败"
-                    FAILED_DOWNLOADS="${FAILED_DOWNLOADS}\n  - luci-app-adblock-fast (frontend)"
+                    echo "⚠️ 警告: 获取 luci‑app‑adblock‑fast 界面失败"
                 fi
 
                 if [ $backend_ok -eq 1 ] && [ $luci_ok -eq 1 ]; then
-                    echo "🎉 adblock-fast 整套处理全部成功"
+                    echo "🎉 adblock‑fast 整套处理全部成功"
                 fi
                 rm -rf "$tmpdir"
             fi
@@ -223,100 +144,93 @@ jobs:
           }
           
           echo "🚀 开始并行下载..."
-          echo "📊 总共需要下载: 50+ 个项目"
           
-          # 批次1 - 基础插件
           (
-            echo "📦 批次1 开始..."
-            git_clone "https://github.com/kiddin9/luci-app-dnsfilter" "luci-app-dnsfilter"
-            git_clone "https://github.com/kiddin9/aria2" "aria2"
-            git_clone "https://github.com/kiddin9/autoshare" "autoshare"
-            git_clone "https://github.com/kiddin9/luci-app-wizard" "luci-app-wizard"
-            git_clone "https://github.com/riverscn/openwrt-iptvhelper" "openwrt-iptvhelper"
-            git_clone "https://github.com/kongfl888/luci-app-timedreboot" "luci-app-timedreboot"
-            git_clone "https://github.com/destan19/OpenAppFilter" "OpenAppFilter"
-            git_clone "https://github.com/boshi116/luci-app-tcpdump" "luci-app-tcpdump"
-            git_clone "https://github.com/IamJasperJ/luci-app-traffic-statistic" "luci-app-traffic-statistic"
-            git_clone "https://github.com/destan19/luci-app-harbor-file" "luci-app-harbor-file"
-            git_clone "https://github.com/migee99/luci-app-clientstatus" "luci-app-clientstatus"
-            git_clone "https://github.com/gaobin89/luci-app-timecontrol" "luci-app-timecontrol"
-            git_clone "https://github.com/hxzlplp7/luci-app-dashboard" "luci-app-dashboard"
-            git_clone "https://github.com/sirpdboy/luci-app-advancedplus" "luci-app-advancedplus"
-            git_clone "https://github.com/sirpdboy/luci-app-partexp" "luci-app-partexp"
-            git_clone "https://github.com/sirpdboy/netspeedtest" "netspeedtest"
-            git_clone "https://github.com/sirpdboy/luci-app-watchdog" "luci-app-watchdog"
+            # 批次1
+            git_clone "https://github.com/kiddin9/luci-app-dnsfilter" "luci-app-dnsfilter" || true
+            git_clone "https://github.com/kiddin9/aria2" "aria2" || true
+            git_clone "https://github.com/kiddin9/autoshare" "autoshare" || true
+            git_clone "https://github.com/kiddin9/luci-app-wizard" "luci-app-wizard" || true
+            git_clone "https://github.com/riverscn/openwrt-iptvhelper" "openwrt-iptvhelper" || true
+            git_clone "https://github.com/kongfl888/luci-app-timedreboot" "luci-app-timedreboot" || true
+            git_clone "https://github.com/destan19/OpenAppFilter" "OpenAppFilter" || true
+            git_clone "https://github.com/boshi116/luci-app-tcpdump" "luci-app-tcpdump" || true
+            git_clone "https://github.com/IamJasperJ/luci-app-traffic-statistic" "luci-app-traffic-statistic" || true
+            git_clone "https://github.com/destan19/luci-app-harbor-file" "luci-app-harbor-file" || true
+            git_clone "https://github.com/migee99/luci-app-clientstatus" "luci-app-clientstatus" || true
           ) &
           PID1=$!
           
-          # 批次2 - 网络相关
           (
-            echo "📦 批次2 开始..."
-            git_clone "https://github.com/sirpdboy/luci-app-parentcontrol" "luci-app-parentcontrol"
-            git_clone "https://github.com/sirpdboy/luci-app-eqosplus" "luci-app-eqosplus"
-            git_clone "https://github.com/sirpdboy/luci-app-taskplan" "luci-app-taskplan"
-            git_clone "https://github.com/sirpdboy/luci-app-netwizard" "luci-app-netwizard"
-            git_clone "https://github.com/gdy666/luci-app-lucky" "luci-app-lucky"
-            git_clone "https://github.com/brvphoenix/luci-app-wrtbwmon" "luci-app-wrtbwmon"
-            git_clone "https://github.com/brvphoenix/wrtbwmon" "wrtbwmon"
-            git_clone "https://github.com/sbwml/luci-app-mosdns" "luci-app-mosdns"
-            git_clone "https://github.com/UnblockNeteaseMusic/luci-app-unblockneteasemusic" "luci-app-unblockneteasemusic"
-            git_clone "https://github.com/sbwml/luci-app-quickfile" "luci-app-quickfile"
-            git_clone "https://github.com/tty228/luci-app-wechatpush" "luci-app-wechatpush"
-            git_clone "https://github.com/ZeaKyX/speedtest-web" "speedtest-web"
-            git_clone "https://github.com/ZeaKyX/luci-app-speedtest-web" "luci-app-speedtest-web"
-            git_clone "https://github.com/vernesong/OpenClash" "OpenClash"
-            git_clone "https://github.com/ilxp/luci-app-ikoolproxy" "luci-app-ikoolproxy"
-            git_clone "https://github.com/EasyTier/luci-app-easytier" "luci-app-easytier"
-            git_clone "https://github.com/stackia/rtp2httpd" "rtp2httpd"
+            # 批次2
+            git_clone "https://github.com/gaobin89/luci-app-timecontrol" "luci-app-timecontrol" || true
+            git_clone "https://github.com/hxzlplp7/luci-app-dashboard" "luci-app-dashboard" || true
+            git_clone "https://github.com/sirpdboy/luci-app-advancedplus" "luci-app-advancedplus" || true
+            git_clone "https://github.com/sirpdboy/luci-app-partexp" "luci-app-partexp" || true
+            git_clone "https://github.com/sirpdboy/netspeedtest" "netspeedtest" || true
+            git_clone "https://github.com/sirpdboy/luci-app-watchdog" "luci-app-watchdog" || true
+            git_clone "https://github.com/sirpdboy/luci-app-parentcontrol" "luci-app-parentcontrol" || true
+            git_clone "https://github.com/sirpdboy/luci-app-eqosplus" "luci-app-eqosplus" || true
+            git_clone "https://github.com/sirpdboy/luci-app-taskplan" "luci-app-taskplan" || true
+            git_clone "https://github.com/sirpdboy/luci-app-netwizard" "luci-app-netwizard" || true
+            git_clone "https://github.com/gdy666/luci-app-lucky" "luci-app-lucky" || true
           ) &
           PID2=$!
           
-          # 批次3 - 主题和其他
           (
-            echo "📦 批次3 开始..."
-            git_clone "https://github.com/jerrykuku/luci-app-argon-config" "luci-app-argon-config"
-            git_clone "https://github.com/jerrykuku/luci-theme-argon" "luci-theme-argon"
-            git_clone "https://github.com/gaoyaxuan/luci-app-pushbot" "luci-app-pushbot"
-            git_clone "https://github.com/nooblk-98/luci-app-netstat" "luci-app-netstat"
-            git_clone "https://github.com/nooblk-98/luci-theme-noobwrt" "luci-theme-noobwrt"
-            git_clone "https://github.com/qimaoww/luci-app-lanspeed" "luci-app-lanspeed"
-            git_clone "https://github.com/Natduki/luci-app-sqm-controller" "luci-app-sqm-controller"
-            git_clone "https://github.com/kenzok78/luci-app-adguardhome" "luci-app-adguardhome"
-            git_clone "https://github.com/pymumu/luci-app-smartdns" "luci-app-smartdns"
-            git_clone "https://github.com/pymumu/openwrt-smartdns" "smartdns"
-            git_clone "https://github.com/Openwrt-Passwall/openwrt-passwall" "openwrt-passwall"
-            git_clone "https://github.com/timsaya/luci-app-bandix" "luci-app-bandix"
-            git_clone "https://github.com/timsaya/openwrt-bandix" "openwrt-bandix"
-            git_clone "https://github.com/timsaya/luci-app-bandix-plus" "luci-app-bandix-plus"
-            git_clone "https://github.com/timsaya/openwrt-bandix-plus" "openwrt-bandix-plus"
-            git_clone "https://github.com/huchd0/luci-app-netwiz" "luci-app-netwiz"
-            git_clone "https://github.com/tpxcer/luci-app-minigate" "luci-app-minigate"
+            # 批次3
+            git_clone "https://github.com/brvphoenix/luci-app-wrtbwmon" "luci-app-wrtbwmon" || true
+            git_clone "https://github.com/brvphoenix/wrtbwmon" "wrtbwmon" || true
+            git_clone "https://github.com/sbwml/luci-app-mosdns" "luci-app-mosdns" || true
+            git_clone "https://github.com/UnblockNeteaseMusic/luci-app-unblockneteasemusic" "luci-app-unblockneteasemusic" || true
+            git_clone "https://github.com/sbwml/luci-app-quickfile" "luci-app-quickfile" || true
+            git_clone "https://github.com/tty228/luci-app-wechatpush" "luci-app-wechatpush" || true
+            git_clone "https://github.com/ZeaKyX/speedtest-web" "speedtest-web" || true
+            git_clone "https://github.com/ZeaKyX/luci-app-speedtest-web" "luci-app-speedtest-web" || true
+            git_clone "https://github.com/vernesong/OpenClash" "OpenClash" || true
           ) &
           PID3=$!
           
-          # 特殊下载（单独进程）
-          (special_downloads) &
+          (
+            # 批次4
+            git_clone "https://github.com/ilxp/luci-app-ikoolproxy" "luci-app-ikoolproxy" || true
+            git_clone "https://github.com/EasyTier/luci-app-easytier" "luci-app-easytier" || true
+            git_clone "https://github.com/stackia/rtp2httpd" "rtp2httpd" || true
+            git_clone "https://github.com/jerrykuku/luci-app-argon-config" "luci-app-argon-config" || true
+            git_clone "https://github.com/jerrykuku/luci-theme-argon" "luci-theme-argon" || true
+            git_clone "https://github.com/gaoyaxuan/luci-app-pushbot" "luci-app-pushbot" || true
+            git_clone "https://github.com/nooblk-98/luci-app-netstat" "luci-app-netstat" || true
+            git_clone "https://github.com/nooblk-98/luci-theme-noobwrt" "luci-theme-noobwrt" || true
+            git_clone "https://github.com/qimaoww/luci-app-lanspeed" "luci-app-lanspeed" || true
+            git_clone "https://github.com/Natduki/luci-app-sqm-controller" "luci-app-sqm-controller" || true
+          ) &
           PID4=$!
           
+          (
+            # 批次5
+            git_clone "https://github.com/kenzok78/luci-app-adguardhome" "luci-app-adguardhome" || true
+            git_clone "https://github.com/pymumu/luci-app-smartdns" "luci-app-smartdns" || true
+            git_clone "https://github.com/pymumu/openwrt-smartdns" "smartdns" || true
+            git_clone "https://github.com/Openwrt-Passwall/openwrt-passwall" "openwrt-passwall" || true
+            git_clone "https://github.com/timsaya/luci-app-bandix" "luci-app-bandix" || true
+            git_clone "https://github.com/timsaya/openwrt-bandix" "openwrt-bandix" || true
+            git_clone "https://github.com/timsaya/luci-app-bandix-plus" "luci-app-bandix-plus" || true
+            git_clone "https://github.com/timsaya/openwrt-bandix-plus" "openwrt-bandix-plus" || true
+            git_clone "https://github.com/huchd0/luci-app-netwiz" "luci-app-netwiz" || true
+            git_clone "https://github.com/tpxcer/luci-app-minigate" "luci-app-minigate" || true
+          ) &
+          PID5=$!
+          
+          (special_downloads) &
+          PID6=$!
+          
           echo "⏳ 等待所有下载任务完成..."
-          wait $PID1 $PID2 $PID3 $PID4
+          wait $PID1 $PID2 $PID3 $PID4 $PID5 $PID6
           
-          echo ""
-          echo "📊 ========== 下载统计 =========="
-          echo "✅ 成功: $SUCCESS_COUNT 个项目"
-          echo "❌ 失败: $((TOTAL_DOWNLOADS - SUCCESS_COUNT)) 个项目"
-          
-          if [ -n "$FAILED_DOWNLOADS" ]; then
-            echo ""
-            echo "❌ 失败的下载列表:"
-            echo -e "$FAILED_DOWNLOADS"
-          fi
-          
-          echo ""
+          echo "📊 所有下载任务已完成"
           echo "📦 下载目录内容:"
           ls -la "$DOWNLOAD_DIR" || echo "下载目录为空或不存在"
           
-          echo ""
           echo "🧹 清理旧文件..."
           find . -maxdepth 1 ! -name '.' ! -name '..' ! -name '.git' ! -name '.github' ! -name 'README.md' ! -name '.gitignore' -exec rm -rf {} + 2>/dev/null || true
           
@@ -330,17 +244,14 @@ jobs:
             done
             shopt -u dotglob
           else
-            echo "❌ 错误: 下载目录为空，所有下载都失败了"
-            exit 1
+            echo "⚠️ 警告: 下载目录为空，可能所有下载都失败了"
           fi
           
-          echo ""
           echo "🧹 清理子目录中的 .git 文件夹..."
           find . -mindepth 2 -type d -name ".git" -exec rm -rf {} + 2>/dev/null || true
-          find . -mindepth 2 -type f -name "README.md" ! -path "./README.md" -delete 2>/dev/null || true
-          find . -mindepth 2 -type f -name "LICENSE" -delete 2>/dev/null || true
+          #find . -mindepth 2 -type f -name "README.md" ! -path "./README.md" -delete 2>/dev/null || true
+          #find . -mindepth 2 -type f -name "LICENSE" -delete 2>/dev/null || true
           
-          echo ""
           echo "✅ 下载完成"
           echo "当前目录内容："
           ls -la
