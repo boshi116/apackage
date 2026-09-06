@@ -40,6 +40,7 @@ const statusViewFile = path.join(modDir, 'statusView.js');
 const daemonMakefile = fs.readFileSync(path.join(root, 'net/lanspeedd/Makefile'), 'utf8');
 const luciMakefile = fs.readFileSync(path.join(root, 'applications/luci-app-lanspeed/Makefile'), 'utf8');
 const moduleManifestFile = path.join(modDir, 'moduleManifest.js');
+const browserAuditFile = path.join(root, 'tests/browser/lanspeed-browser-audit.js');
 
 const EXPECTED_MODULES = [
 	'moduleManifest.js',
@@ -4973,7 +4974,7 @@ function assertViewRequires(src) {
 
 function assertCacheAwareViewEntry(src, moduleName, label) {
 	if (!/^\s*['"]require\s+view['"]\s*;/m.test(src) ||
-	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.2.0-r3';") ||
+	    !src.includes("var RESOURCE_VERSION = 'lanspeed-1.2.1-r1';") ||
 	    !src.includes('var previousVersion = L.env.resource_version;') ||
 	    !src.includes('L.env.resource_version = RESOURCE_VERSION;') ||
 	    !src.includes(`L.require('${moduleName}')`) ||
@@ -4981,7 +4982,7 @@ function assertCacheAwareViewEntry(src, moduleName, label) {
 	    !src.includes('return view.extend({') ||
 	    !src.includes('return module.load();') ||
 	    !src.includes('return pageModule.render(data);')) {
-		fail(`${label} must load ${moduleName} through the 1.2.0 resource cache boundary`);
+		fail(`${label} must load ${moduleName} through the 1.2.1 resource cache boundary`);
 	}
 	if (src.includes('buildShell(') || src.includes('refreshLive(') || src.includes('loadAll()')) {
 		fail(`${label} must remain a cache-aware entry and not duplicate page logic`);
@@ -6607,6 +6608,26 @@ function assertConfigModelRewrite(src) {
 		fail('configModel.js must explicitly identify compatibility fields and interface limits');
 }
 
+function assertBrowserAuditConfigContract() {
+	const src = fs.readFileSync(browserAuditFile, 'utf8');
+	const start = src.indexOf('const requiredFields = [');
+	const end = src.indexOf('const uniqueFields', start);
+	if (start === -1 || end === -1) {
+		fail('browser audit must declare the exact configuration field contract');
+		return;
+	}
+	const contract = src.slice(start, end);
+	[
+		'rate_collector_mode', 'access_edge_mode', 'internet_view_mode',
+		'nss_low_rate_window_ms', 'nss_low_rate_high_watermark_bps',
+		'nss_fifo_target_delay_ms', 'nss_fifo_min_queue_packets',
+		'rate_compensation_factor', 'conn_collector_mode'
+	].forEach(function(name) {
+		if (!contract.includes("'" + name + "'"))
+			fail(`browser audit configuration contract must include ${name}`);
+	});
+}
+
 function cloneConfigValue(value) {
 	if (Array.isArray(value)) return value.slice();
 	if (value && typeof value === 'object') return Object.assign({}, value);
@@ -7074,7 +7095,7 @@ function matchingConfigStatus(values) {
 		max_clients: values.max_clients,
 		enable_bpf: values.enable_bpf === '1',
 		enable_conntrack_fallback: values.enable_conntrack_fallback === '1',
-		version: '1.2.0-r3',
+		version: '1.2.1-r1',
 		capabilities: { bpf: true, conntrack_fallback: true },
 		evidence: {
 			platform: { profile: 'nss_aarch64' },
@@ -7104,7 +7125,7 @@ function assertConfigFormBehavior(src) {
 	}, makeConfigIfaceStub(), model);
 	asyncChecks.push(validLoadForm.loadValues().then(function(values) {
 		if (values.pageState !== 'ready' || !values.rpc.status.ok ||
-			values.rpc.status.phase !== 'success' || values.status.version !== '1.2.0-r3') {
+			values.rpc.status.phase !== 'success' || values.status.version !== '1.2.1-r1') {
 			fail('configForm.js must accept the complete status contract and retain capability evidence');
 		}
 	}).catch(function(error) {
@@ -7651,6 +7672,7 @@ EXPECTED_MODULES.forEach(function(name) {
 		}
 });
 assertManifestCoverage();
+assertBrowserAuditConfigContract();
 
 assertStyleAggregation();
 assertProductDesignSystem();

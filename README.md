@@ -1,9 +1,15 @@
 ## 📦 自用包自动更新
 
-- **更新时间**：2026-09-05 23:52:27
-- **更新文件数**：12
+- **更新时间**：2026-09-07 00:05:39
+- **更新文件数**：60
 - **更新插件**：
+  - `luci-app-aria2`
+  - `luci-app-bandix`
+  - `luci-app-lanspeed`
   - `luci-app-mosdns`
+  - `openwrt-bandix`
+  - `openwrt-passwall`
+  - `rtp2httpd`
 
 ---
 
