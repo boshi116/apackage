@@ -1,6 +1,9 @@
 .vscode/
 .zed/
 
+# Local debug script
+/local-debug.sh
+
 # macOS
 .DS_Store
 
@@ -30,6 +33,7 @@ __pycache__/
 
 # Benchmark results
 tools/benchmark_results_*.txt
+tools/stress-test/results/
 
 # iKuai package outputs
 ikuai-support/.staging/
