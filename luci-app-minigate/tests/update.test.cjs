@@ -43,7 +43,11 @@ function backend(body, options = {}) {
         API_URL=https://example.invalid/latest
         ${functions}
         jsonfilter() { "$NODE" "$TEST_DIR/jsonfilter.cjs" "$@"; }
-        flock() { test "\${FLOCK_BUSY:-0}" = 0; }
+        flock() {
+            printf '%s\n' "$*" >> "$TEST_DIR/flocks"
+            [ "$1" = "-u" ] && return 0
+            test "\${FLOCK_BUSY:-0}" = 0
+        }
         download_file() {
             printf 'fetch\\n' >> "$TEST_DIR/fetches"
             test "\${FETCH_FAIL:-0}" = 0 || return 1
@@ -55,7 +59,8 @@ function backend(body, options = {}) {
     return {
         ...result,
         state: fs.existsSync(path.join(dir, 'state.json')) ? JSON.parse(fs.readFileSync(path.join(dir, 'state.json'))) : null,
-        fetches: fs.existsSync(path.join(dir, 'fetches')) ? fs.readFileSync(path.join(dir, 'fetches'), 'utf8').trim().split('\n').length : 0
+        fetches: fs.existsSync(path.join(dir, 'fetches')) ? fs.readFileSync(path.join(dir, 'fetches'), 'utf8').trim().split('\n').length : 0,
+        flocks: fs.existsSync(path.join(dir, 'flocks')) ? fs.readFileSync(path.join(dir, 'flocks'), 'utf8').trim().split('\n') : []
     };
 }
 
@@ -111,6 +116,19 @@ test('busy updater is reported without downloading or starting another update', 
     assert.equal(result.fetches, 0);
 });
 
+test('apply releases its lock even when the locked operation returns early', () => {
+    const result = backend('run_apply_locked() { return 7; }; run_apply "$CURRENT_VERSION"');
+    assert.equal(result.status, 7, result.stderr);
+    assert.deepEqual(result.flocks, ['-n 9', '-u 9']);
+});
+
+test('long-running services are started with the update lock descriptor closed', () => {
+    const installer = fs.readFileSync(path.join(root, 'install.sh'), 'utf8');
+    assert.match(installer, /\/etc\/init\.d\/minigate start 9>&-/);
+    assert.match(source, /\/etc\/init\.d\/minigate start >> "\$RUN_LOG" 2>&1 9>&-/);
+    assert.equal((source.match(/\/etc\/init\.d\/uhttpd restart >> "\$RUN_LOG" 2>&1 9>&-/g) || []).length, 2);
+});
+
 test('network failure is recoverable and never starts installation', () => {
     const result = backend('run_auto_check', { env: { FETCH_FAIL: '1' } });
     assert.equal(result.status, 1);
@@ -135,17 +153,20 @@ function overview() {
     const js = lua.slice(lua.indexOf('var _updatePolling'), lua.indexOf('var limitSel')).replace(/\]\] \.\. (\w+) \.\. \[\[/g, '$1');
     const elements = new Map();
     const element = id => {
-        if (!elements.has(id)) elements.set(id, { style: {}, className: '', textContent: '', disabled: false, setAttribute() {}, focus() { document.activeElement = this; } });
+        if (!elements.has(id)) elements.set(id, { style: {}, className: '', textContent: '', disabled: false, checked: false, hidden: false, setAttribute() {}, focus() { document.activeElement = this; } });
         return elements.get(id);
     };
     const listeners = {};
     const document = {
         body: { style: { overflow: 'auto' } }, activeElement: null,
-        getElementById: element, addEventListener: (name, handler) => { listeners[name] = handler; }
+        getElementById: element, querySelector: () => null, addEventListener: (name, handler) => { listeners[name] = handler; }
     };
     const buttons = ['close', 'mg-update-modal-notes', 'cancel', 'mg-update-confirm'].map(element);
+    const uninstallItems = ['mg-uninstall-close', 'mg-uninstall-purge', 'mg-uninstall-cancel', 'mg-uninstall-confirm'].map(element);
     element('mg-update-modal').querySelectorAll = () => buttons;
     element('mg-update-modal').contains = item => buttons.includes(item);
+    element('mg-uninstall-modal').querySelectorAll = () => uninstallItems;
+    element('mg-uninstall-modal').contains = item => uninstallItems.includes(item);
     const requests = [], timers = [];
     const context = vm.createContext({ document, mgColor: value => value, location: { reload() {} }, setTimeout: callback => timers.push(callback), XHR: {
         get: (url, data, callback) => requests.push({ method: 'GET', url, data, callback }),
@@ -153,7 +174,7 @@ function overview() {
     } });
     vm.runInContext(js, context);
     const available = { status: 'available', current: version, latest: '2027.1.1', available: true, success: true, release_title: 'New release', release_notes: '<script>bad()</script>\n中文说明' };
-    return { context, document, element, requests, timers, available, buttons, listeners };
+    return { context, document, element, requests, timers, available, buttons, uninstallItems, listeners };
 }
 
 test('overview automatically checks but does not install', () => {
@@ -201,6 +222,56 @@ test('dialog traps keyboard focus and Escape cancels without installation', () =
     page.listeners.keydown({ key: 'Escape', preventDefault() {} });
     assert.equal(page.element('mg-update-modal').className, 'mg-modal');
     assert.equal(page.requests.length, 0);
+});
+
+test('uninstall defaults to preserving data and cancel, Escape and backdrop never submit', () => {
+    const page = overview();
+    page.element('mg-uninstall-purge').checked = true;
+    page.context.mgOpenUninstallDialog();
+    assert.equal(page.element('mg-uninstall-purge').checked, false);
+    assert.equal(page.element('mg-uninstall-modal').className, 'mg-modal is-open');
+    assert.match(page.element('mg-uninstall-detail').textContent, /默认保留/);
+    page.listeners.keydown({ key: 'Escape', preventDefault() {} });
+    assert.equal(page.requests.length, 0);
+
+    page.context.mgOpenUninstallDialog();
+    page.element('mg-uninstall-modal').onclick({ target: page.element('mg-uninstall-modal') });
+    assert.equal(page.requests.length, 0);
+    page.context.mgOpenUninstallDialog();
+    page.context.mgCloseUninstallDialog();
+    assert.equal(page.requests.length, 0);
+});
+
+test('uninstall submits an explicit purge choice once and redirects only after acceptance', () => {
+    const page = overview();
+    page.context.mgOpenUninstallDialog();
+    page.element('mg-uninstall-purge').checked = true;
+    page.context.mgUpdateUninstallChoice();
+    assert.equal(page.element('mg-uninstall-confirm').textContent, '彻底卸载');
+    page.context.mgStartUninstall();
+    page.context.mgStartUninstall();
+    assert.equal(page.requests.length, 1);
+    assert.equal(page.requests[0].method, 'POST');
+    assert.equal(page.requests[0].url, 'du');
+    assert.equal(page.requests[0].data.confirm, 'uninstall-minigate');
+    assert.equal(page.requests[0].data.purge, '1');
+    page.requests[0].callback(null, { success: true });
+    assert.match(page.element('mg-uninstall-status').textContent, /返回服务页面/);
+    assert.equal(page.timers.length, 1);
+    page.timers[0]();
+    assert.equal(page.context.location.href, 'services_url');
+});
+
+test('a rejected uninstall remains open and can be retried', () => {
+    const page = overview();
+    page.context.mgOpenUninstallDialog();
+    page.context.mgStartUninstall();
+    page.requests[0].callback(null, { success: false, message: 'busy' });
+    assert.equal(page.element('mg-uninstall-modal').className, 'mg-modal is-open');
+    assert.equal(page.element('mg-uninstall-confirm').disabled, false);
+    assert.equal(page.element('mg-uninstall-status').textContent, 'busy');
+    page.context.mgStartUninstall();
+    assert.equal(page.requests.length, 2);
 });
 
 test('an old success state never reloads an overview that did not start the update', () => {
