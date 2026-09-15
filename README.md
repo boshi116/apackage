@@ -1,10 +1,11 @@
 ## 📦 自用包自动更新
 
-- **更新时间**：2026-09-15 02:28:05
-- **更新文件数**：34
+- **更新时间**：2026-09-15 16:02:56
+- **更新文件数**：42
 - **更新插件**：
-  - `luci-app-bandix-plus`
   - `luci-app-minigate`
+  - `luci-app-netstat`
+  - `minigate`
   - `openwrt-passwall`
 
 ---
