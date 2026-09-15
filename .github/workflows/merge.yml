@@ -219,7 +219,7 @@ jobs:
             git_clone "https://github.com/timsaya/luci-app-bandix-plus" "luci-app-bandix-plus" || true
             git_clone "https://github.com/timsaya/openwrt-bandix-plus" "openwrt-bandix-plus" || true
             git_clone "https://github.com/huchd0/luci-app-netwiz" "luci-app-netwiz" || true
-            git_clone "https://github.com/tpxcer/luci-app-minigate" "luci-app-minigate" || true
+            git_clone "https://github.com/tpxcer/minigate" "minigate" || true
           ) &
           PID5=$!
           
