@@ -1,11 +1,9 @@
 ## 📦 自用包自动更新
 
-- **更新时间**：2026-09-28 01:37:18
-- **更新文件数**：7
+- **更新时间**：2026-09-28 12:45:21
+- **更新文件数**：4
 - **更新插件**：
-  - `luci-app-adblock-fast`
-  - `luci-app-quickfile`
-  - `openwrt-passwall`
+  - `luci-app-timecontrol`
 
 ---
 
