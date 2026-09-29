@@ -222,6 +222,7 @@ jobs:
             git_clone "https://github.com/tpxcer/minigate" "minigate" || true
             git_clone "https://github.com/LianXia233/luci-app-netmonitor" "luci-app-netmonitor" || true
             git_clone "https://github.com/VincentZyu233/luci-app-live-traffic" "luci-app-live-traffic" || true
+            git_clone "https://github.com/zhouzhouzk/luci-app-netview" "luci-app-netview" || true
           ) &
           PID5=$!
           
