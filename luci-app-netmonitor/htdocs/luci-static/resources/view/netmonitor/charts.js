@@ -1,5 +1,8 @@
 /*
  * 延迟曲线页面：多目标对比折线图（自研 SVG 图表，支持鼠标悬停与触摸查看）
+ * TDesign Web Components 重构版本
+ * 工具栏 / 目标胶囊选择器 / 统计摘要卡 / 图表容器由 <t-*> 组件承载，
+ * 折线交互与动态 SVG 采样动效保留原有实现。
  */
 
 'use strict';
@@ -22,13 +25,17 @@ var RANGES = [
 return view.extend({
 	load: function() {
 		common.css();
-		return Promise.all([common.loadI18n(), common.api.getConfig()]);
+		return Promise.all([
+			common.loadI18n(),
+			common.tdesign(),
+			common.api.getConfig()
+		]);
 	},
 
 	render: function(res) {
 		common.css();
 
-		var cfg = (res && res[1]) || {};
+		var cfg = (res && res[2]) || {};
 		var refresh = Math.max(3, parseInt(cfg.ui_refresh, 10) || 2);
 		var range = '15m';
 		var selected = {};
@@ -40,16 +47,15 @@ return view.extend({
 		var page = common.el('div', 'nm-page');
 		root.appendChild(page);
 
-		/* 工具栏 */
-		var bar = common.el('div', 'nm-card');
-		var row = common.el('div', 'nm-row');
+		/* 工具栏（TDesign 视觉卡） */
+		var bar = common.tcard('nm-chart-toolbar');
+		var row = common.el('div', 'nm-toolbar-row');
 
-		var fRange = common.el('div', 'nm-field');
-		var selRange = common.el('select', 'nm-select');
-		RANGES.forEach(function(r) {
-			var op = common.el('option', '', _(r[1]));
-			op.value = r[0];
-			selRange.appendChild(op);
+		/* 时间范围（t-select） */
+		var fRange = common.el('div', 'nm-field-glass');
+		var selRange = document.createElement('t-select');
+		selRange.options = RANGES.map(function(r) {
+			return { label: _(r[1]), value: r[0] };
 		});
 		selRange.value = range;
 		selRange.addEventListener('change', function() {
@@ -60,18 +66,16 @@ return view.extend({
 		fRange.appendChild(selRange);
 		row.appendChild(fRange);
 
-		var fPreset = common.el('div', 'nm-field');
-		var selPreset = common.el('select', 'nm-select');
-		[
-			['all', _('All targets')],
-			['cn', _('China')],
-			['overseas', _('Overseas')],
-			['other', _('Other')]
-		].forEach(function(o) {
-			var op = common.el('option', '', o[1]);
-			op.value = o[0];
-			selPreset.appendChild(op);
-		});
+		/* 快捷筛选（t-select） */
+		var fPreset = common.el('div', 'nm-field-glass');
+		var selPreset = document.createElement('t-select');
+		selPreset.options = [
+			{ label: _('All targets'), value: 'all' },
+			{ label: _('China'), value: 'cn' },
+			{ label: _('Overseas'), value: 'overseas' },
+			{ label: _('Other'), value: 'other' }
+		];
+		selPreset.value = 'all';
 		selPreset.addEventListener('change', function() {
 			var v = selPreset.value;
 			selectAll = (v === 'all');
@@ -87,33 +91,34 @@ return view.extend({
 		fPreset.appendChild(selPreset);
 		row.appendChild(fPreset);
 
-		row.appendChild(common.el('div', 'nm-spacer'));
+		var spacer = common.el('div', 'nm-spacer');
+		spacer.style.flex = '1';
+		row.appendChild(spacer);
 		bar.appendChild(row);
 
-		var chips = common.el('div', 'nm-row');
-		chips.style.marginTop = '10px';
+		/* 目标多选胶囊（t-tag，可点击切换） */
+		var chips = common.el('div', 'nm-chips-container');
 		bar.appendChild(chips);
 		page.appendChild(bar);
 
-		/* 图表 */
-		var card = common.el('div', 'nm-card');
-		summary = common.el('div', 'nm-row');
+		/* 图表主卡片（TDesign 视觉卡） */
+		var card = common.tcard('nm-chart-main-card');
+
+		summary = common.el('div', 'nm-chart-summary-grid');
 		card.appendChild(summary);
 
-		chartBox = common.el('div', 'nm-chart-box');
-		chartBox.style.marginTop = '10px';
+		chartBox = common.el('div', 'nm-chart-box nm-chart-box-glass');
 		card.appendChild(chartBox);
 
 		legend = common.el('div', 'nm-chart-legend');
 		card.appendChild(legend);
 
-		hint = common.el('div', 'nm-card-sub');
-		hint.style.marginTop = '6px';
+		hint = common.el('div', 'nm-chart-hint-pill');
 		card.appendChild(hint);
 
 		page.appendChild(card);
 
-		/* 与后端一致的等级判定（阈值取自 getConfig），保证图标颜色与后端 grade 对齐 */
+		/* 阈值判定函数（与后端一致，阈值取自 UCI） */
 		function gradeOf(ms) {
 			if (ms == null || isNaN(ms)) return 'unknown';
 			var ex = parseFloat(cfg.latency_excellent) || 50;
@@ -127,31 +132,81 @@ return view.extend({
 			return 'severe';
 		}
 
+		/* 动态 SVG 实时采样声波柱生成器（动效类收口在 style.css） */
+		function buildLiveWaveSvg(bars) {
+			var b1 = Math.min(22, Math.max(5, (bars[0] || 15) / 5));
+			var b2 = Math.min(22, Math.max(5, (bars[1] || 35) / 5));
+			var b3 = Math.min(22, Math.max(5, (bars[2] || 25) / 5));
+			var b4 = Math.min(22, Math.max(5, (bars[3] || 45) / 5));
+			var b5 = Math.min(22, Math.max(5, (bars[4] || 18) / 5));
+
+			return `
+			<svg width="44" height="28" viewBox="0 0 44 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+				<defs>
+					<linearGradient id="nm-wave-grad" x1="0%" y1="100%" x2="0%" y2="0%">
+						<stop offset="0%" stop-color="#2563eb" stop-opacity="0.5" />
+						<stop offset="100%" stop-color="#60a5fa" />
+					</linearGradient>
+				</defs>
+				<rect class="nm-bar-dyn-1" x="2" y="${28 - b1}" width="4.5" height="${b1}" rx="2.2" fill="url(#nm-wave-grad)" />
+				<rect class="nm-bar-dyn-2" x="11" y="${28 - b2}" width="4.5" height="${b2}" rx="2.2" fill="url(#nm-wave-grad)" />
+				<rect class="nm-bar-dyn-3" x="20" y="${28 - b3}" width="4.5" height="${b3}" rx="2.2" fill="url(#nm-wave-grad)" />
+				<rect class="nm-bar-dyn-4" x="29" y="${28 - b4}" width="4.5" height="${b4}" rx="2.2" fill="url(#nm-wave-grad)" />
+				<rect class="nm-bar-dyn-5" x="38" y="${28 - b5}" width="4.5" height="${b5}" rx="2.2" fill="url(#nm-wave-grad)" />
+			</svg>`;
+		}
+
 		function renderChips() {
 			common.clear(chips);
 			if (!data || !data.series.length) return;
 			for (var i = 0; i < data.series.length; i++) {
 				(function(s, idx) {
 					var on = !!selected[s.id];
-					var b = common.el('button', 'nm-btn nm-btn-sm' + (on ? ' nm-btn-primary' : ''),
-						(on ? '● ' : '○ ') + (s.name || s.id));
-					b.style.borderColor = on ? '' : common.palette[idx % common.palette.length];
-					b.addEventListener('click', function() {
+					var seriesColor = common.palette[idx % common.palette.length];
+					var tag = document.createElement('t-tag');
+					tag.className = 'nm-chip-tag';
+					tag.setAttribute('theme', on ? 'primary' : 'default');
+					tag.setAttribute('variant', on ? 'light' : 'outline');
+
+					var dot = common.el('span', 'nm-chip-dot');
+					dot.style.backgroundColor = seriesColor;
+					tag.appendChild(dot);
+					tag.appendChild(document.createTextNode(s.name || s.id));
+
+					tag.addEventListener('click', function() {
 						if (selected[s.id]) delete selected[s.id];
 						else selected[s.id] = true;
 						renderChips();
 						drawChart();
 					});
-					chips.appendChild(b);
+					chips.appendChild(tag);
 				})(data.series[i], i);
 			}
 		}
 
+		function releaseHold() {
+			chartBox.style.minHeight = '';
+			legend.style.minHeight = '';
+			summary.style.minHeight = '';
+		}
+
 		function drawChart() {
+			/* 轮询重建前锁定容器高度：mount 内部会强制布局（clientWidth），
+			 * 若此时图表/摘要已清空，页面高度瞬时塌缩会把移动端滚动位置钳回顶部。 */
+			var boxH = chartBox.offsetHeight || 0;
+			var legH = legend.offsetHeight || 0;
+			var sumH = summary.offsetHeight || 0;
+			if (boxH > 0) chartBox.style.minHeight = boxH + 'px';
+			if (legH > 0) legend.style.minHeight = legH + 'px';
+			if (sumH > 0) summary.style.minHeight = sumH + 'px';
+
 			common.clear(chartBox);
 			common.clear(legend);
 			common.clear(summary);
-			if (!data) return;
+			if (!data) {
+				releaseHold();
+				return;
+			}
 
 			var series = [];
 			var cur = [], mx = [], mn = [];
@@ -175,11 +230,15 @@ return view.extend({
 			}
 
 			if (!series.length) {
-				chartBox.appendChild(common.el('div', 'nm-empty', _('No target selected')));
+				var emptyEl = common.el('div', 'nm-empty', _('No target selected'));
+				emptyEl.style.padding = '44px';
+				emptyEl.style.textAlign = 'center';
+				chartBox.appendChild(emptyEl);
+				releaseHold();
 				return;
 			}
 
-			chart.mount(chartBox, series, { height: 260, area: (series.length === 1) });
+			chart.mount(chartBox, series, { height: 280, area: (series.length === 1) });
 
 			for (var k = 0; k < series.length; k++) {
 				var item = common.el('span', '');
@@ -191,39 +250,49 @@ return view.extend({
 			}
 
 			function sumBox(label, value, cls, svg) {
-				var b = common.el('div', 'nm-card');
-				b.style.flex = '1 1 150px';
-				b.appendChild(common.el('div', 'nm-card-title', label));
-				b.appendChild(common.el('div', 'nm-card-value ' + (cls || ''), value));
-				if (svg) common.cardIcon(b, svg);
+				var b = common.el('div', 'nm-sum-card');
+				var top = common.el('div', '');
+				top.appendChild(common.el('div', 'nm-sum-card-title', label));
+				if (svg) {
+					var iconWrap = common.el('div', '');
+					if (typeof svg === 'string') iconWrap.innerHTML = svg;
+					else iconWrap.appendChild(svg);
+					top.appendChild(iconWrap);
+				}
+				b.appendChild(top);
+				b.appendChild(common.el('div', 'nm-sum-card-val ' + (cls || ''), value));
 				return b;
 			}
+
 			var avgCur = cur.length ? (cur.reduce(function(a, b) { return a + b; }, 0) / cur.length) : null;
 			var maxV = mx.length ? Math.max.apply(null, mx) : null;
 			var minV = mn.length ? Math.min.apply(null, mn) : null;
 			var rangeLabel = _(RANGES.filter(function(r) { return r[0] === range; })[0][1]);
 
 			summary.appendChild(sumBox(_('Current'), common.fmt.latency(avgCur) + ' ms',
-				common.gradeClass(gradeOf(avgCur)), icons.latencyDial(avgCur, gradeOf(avgCur), 50)));
+				common.gradeClass(gradeOf(avgCur)), icons.latencyDial(avgCur, gradeOf(avgCur), 40)));
 			summary.appendChild(sumBox(_('Max'), common.fmt.latency(maxV) + ' ms',
-				common.gradeClass(gradeOf(maxV)), icons.highLatency(maxV, gradeOf(maxV), 50)));
+				common.gradeClass(gradeOf(maxV)), icons.highLatency(maxV, gradeOf(maxV), 40)));
 			summary.appendChild(sumBox(_('Min'), common.fmt.latency(minV) + ' ms',
-				common.gradeClass(gradeOf(minV)), icons.gradeGauge(minV, gradeOf(minV), 50)));
-			summary.appendChild(sumBox(_('Range'), rangeLabel, '', icons.database(50)));
+				common.gradeClass(gradeOf(minV)), icons.gradeGauge(minV, gradeOf(minV), 40)));
+			summary.appendChild(sumBox(_('Range'), rangeLabel, '', icons.database(40)));
 
-			/* 柱状高度取各已选目标的当前延迟，柱数与已选目标数一致 */
+			/* 动态 SVG 音波实时采样指示 */
 			var plot = [];
-			for (var q = 0; q < cur.length && q < 4; q++) plot.push(cur[q]);
-			summary.appendChild(common.iconCard(_('Live sampling'),
+			for (var q = 0; q < cur.length && q < 5; q++) plot.push(cur[q]);
+			summary.appendChild(sumBox(_('Live sampling'),
 				String(series.length) + ' / ' + String(data.series.length),
-				_('Selected targets'), icons.liveBars(plot, 56)));
+				'', buildLiveWaveSvg(plot)));
 
-			hint.textContent = (data.source === 'persistent')
-				? _('Data source: persistent history on flash')
-				: _('Data source: in-memory ring buffer');
+			hint.innerHTML = `
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" style="opacity:0.75"><circle cx="8" cy="8" r="7" stroke="currentColor" fill="none"/><path d="M8 4v5M8 11v1" stroke="currentColor" stroke-width="1.5"/></svg>
+				<span>${(data.source === 'persistent') ? _('Data source: persistent history on flash') : _('Data source: in-memory ring buffer')}</span>
+			`;
+			releaseHold();
 		}
 
 		function reload() {
+			var sy = window.scrollY || document.documentElement.scrollTop || 0;
 			return common.api.getHistory({ range: range, max_points: 600 }).then(function(d) {
 				data = d;
 				if (selectAll) {
@@ -233,9 +302,19 @@ return view.extend({
 				}
 				renderChips();
 				drawChart();
+				/* 兜底：若移动端浏览器把滚动位置弹回顶部，则恢复原位 */
+				if (sy > 0) {
+					var now = window.scrollY || document.documentElement.scrollTop || 0;
+					if (now === 0) window.scrollTo(0, sy);
+				}
 			}).catch(function(e) {
+				var bh = chartBox.offsetHeight || 0;
+				if (bh > 0) chartBox.style.minHeight = bh + 'px';
 				common.clear(chartBox);
-				chartBox.appendChild(common.el('div', 'nm-empty', String(e.message || e)));
+				var errEl = common.el('div', 'nm-empty', String(e.message || e));
+				errEl.style.padding = '30px';
+				chartBox.appendChild(errEl);
+				chartBox.style.minHeight = '';
 			});
 		}
 

@@ -1,5 +1,9 @@
 /*
  * 目标管理页面：新增 / 编辑 / 删除 / 启用 / 禁用 / 上下移动 / 复制 / 批量操作
+ * TDesign Web Components 重构版本
+ * 工具栏 / 按钮 / 标签 / 开关 / 弹窗 / 表单由 <t-*> 组件承载，
+ * 明细表格保留 .nm-table 平面结构（t-table 的列配置在 WC 版渲染成本高，
+ * 且本表含动态 SVG / 开关 / 按钮混合单元格，手写结构更可控）。
  */
 
 'use strict';
@@ -12,6 +16,7 @@ return view.extend({
 		common.css();
 		return Promise.all([
 			common.loadI18n(),
+			common.tdesign(),
 			common.api.getTargets(),
 			common.api.getConfig()
 		]);
@@ -20,8 +25,8 @@ return view.extend({
 	render: function(res) {
 		common.css();
 
-		var targets = ((res && res[1]) || {}).targets || [];
-		var cfg = (res && res[2]) || {};
+		var targets = ((res && res[2]) || {}).targets || [];
+		var cfg = (res && res[3]) || {};
 		var checked = {};
 
 		var root = common.el('div', 'nm-root');
@@ -29,43 +34,60 @@ return view.extend({
 		root.appendChild(page);
 
 		/* 工具栏 */
-		var bar = common.el('div', 'nm-card');
+		var bar = common.tcard();
 		var row = common.el('div', 'nm-row');
+		row.style.display = 'flex';
+		row.style.alignItems = 'center';
+		row.style.flexWrap = 'wrap';
+		row.style.gap = '12px';
+		row.style.width = '100%';
 
-		function toolBtn(label, fn, cls) {
-			var b = common.el('button', 'nm-btn ' + (cls || ''), label);
+		function toolBtn(label, fn, isPrimary, svgIcon) {
+			var b = document.createElement('t-button');
+			b.setAttribute('theme', isPrimary ? 'primary' : 'default');
+			if (!isPrimary) b.setAttribute('variant', 'outline');
+			if (svgIcon) {
+				var icBox = common.el('span', '');
+				icBox.innerHTML = svgIcon;
+				b.appendChild(icBox);
+			}
+			b.appendChild(document.createTextNode(label));
 			b.addEventListener('click', function() {
-				b.disabled = true;
+				b.setAttribute('disabled', '');
 				Promise.resolve(fn()).then(function() {
 					reload();
 				}).catch(function(e) {
 					common.notify(String(e.message || e), 'error');
-				}).then(function() { b.disabled = false; });
+				}).then(function() { b.removeAttribute('disabled'); });
 			});
 			return b;
 		}
 
-		row.appendChild(toolBtn(_('Add target'), function() { return openEditor(null); }, 'nm-btn-primary'));
+		var addSvg = `<svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8 2a1 1 0 0 1 1 1v4h4a1 1 0 1 1 0 2H9v4a1 1 0 1 1-2 0V9H3a1 1 0 0 1 0-2h4V3a1 1 0 0 1 1-1z"/></svg>`;
+		var okSvg = `<svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M13.485 1.929a1 1 0 0 1 1.414 1.414L6.343 11.899 1.1 6.657a1 1 0 0 1 1.414-1.414l3.829 3.829 7.142-7.143z"/></svg>`;
+		var disSvg = `<svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="2" fill="none"/><line x1="3.5" y1="3.5" x2="12.5" y2="12.5" stroke="currentColor" stroke-width="2"/></svg>`;
+		var refSvg = `<svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M11.534 7h3.932a.25.25 0 0 1 .192.41l-1.966 2.36a.25.25 0 0 1-.384 0l-1.966-2.36a.25.25 0 0 1 .192-.41zm-11 2h3.932a.25.25 0 0 0 .192-.41L2.692 6.23a.25.25 0 0 0-.384 0L.342 8.59A.25.25 0 0 0 .534 9z"/><path fill-rule="evenodd" d="M8 3c-1.552 0-2.94.707-3.857 1.818a.5.5 0 1 1-.771-.636A6.002 6.002 0 0 1 13.917 7H12.9A5.002 5.002 0 0 0 8 3zM3.1 9a5.002 5.002 0 0 0 8.9 4.182.5.5 0 1 1 .771.636A6.002 6.002 0 0 1 2.083 9H3.1z"/></svg>`;
+
+		row.appendChild(toolBtn(_('Add target'), function() { return openEditor(null); }, true, addSvg));
 		row.appendChild(toolBtn(_('Enable selected'), function() {
 			return common.api.batchTargets(selectedIds(), true);
-		}));
+		}, false, okSvg));
 		row.appendChild(toolBtn(_('Disable selected'), function() {
 			return common.api.batchTargets(selectedIds(), false);
-		}));
-		row.appendChild(toolBtn(_('Refresh'), function() { return Promise.resolve(); }));
-		row.appendChild(common.el('div', 'nm-spacer'));
+		}, false, disSvg));
+		row.appendChild(toolBtn(_('Refresh'), function() { return Promise.resolve(); }, false, refSvg));
 
-		/* 工具条右侧：多目标图标的圆点数量与目标配置一致，蓝色表示已启用、
-		 * 灰色表示已禁用（本页不采集延迟，因此图标只表达配置状态，不冒充链路健康）；
-		 * 齿轮图标与左侧的全局间隔 / 超时数值一一对应。 */
-		var summary = common.el('div', 'nm-row');
+		var spacer = common.el('div', 'nm-spacer');
+		spacer.style.flex = '1';
+		row.appendChild(spacer);
+
+		var summary = common.el('div', 'nm-summary-pill');
 		var sumIconBox = common.el('span', 'nm-inline-icon');
-		sumIconBox.innerHTML = icons.multiTarget(targets, 34);
+		sumIconBox.innerHTML = icons.multiTarget(targets, 30);
 		summary.appendChild(sumIconBox);
-		summary.appendChild(common.inlineIcon(icons.gear(30)));
 		var sumProto = (cfg.default_proto === 'tcp')
 			? ('TCP:' + (cfg.default_tcp_port || 80)) : 'ICMP';
-		summary.appendChild(common.el('span', 'nm-card-sub',
+		summary.appendChild(common.el('span', '',
 			_('Default probe method') + ': ' + sumProto + ' · ' +
 			_('Global interval') + ': ' + (cfg.interval || 10) + 's · ' +
 			_('Timeout') + ': ' + (cfg.timeout || 3) + 's'));
@@ -88,12 +110,13 @@ return view.extend({
 		wrap.appendChild(table);
 		page.appendChild(wrap);
 
-		var tipRow = common.el('div', 'nm-row');
-		tipRow.appendChild(common.inlineIcon(icons.responsive(30)));
-		var tipText = common.el('div', 'nm-card-sub');
+		var tipRow = common.tcard();
+		var tipText = common.el('div', '');
 		tipText.innerHTML = _('Interval and timeout set to 0 inherit the global settings.') +
-			'<br>' + _('The table scrolls horizontally on small screens.');
+			' · ' + _('The table scrolls horizontally on small screens.');
 		tipRow.appendChild(tipText);
+		tipRow.style.fontSize = '12px';
+		tipRow.style.color = 'var(--nm-muted)';
 		page.appendChild(tipRow);
 
 		function selectedIds() {
@@ -103,14 +126,44 @@ return view.extend({
 			return ids;
 		}
 
+		/* TDesign 标签：协议 / 区域胶囊 */
+		function protoTag(t) {
+			var isTcp = (t.proto === 'tcp');
+			var tag = document.createElement('t-tag');
+			tag.setAttribute('theme', isTcp ? 'primary' : 'success');
+			tag.setAttribute('variant', 'light');
+			var text;
+			if (isTcp) {
+				var tport = (t.tcp_port || 0) > 0 ? t.tcp_port : (cfg.default_tcp_port || 80);
+				text = 'TCP:' + tport;
+			} else {
+				text = 'ICMP';
+			}
+			tag.textContent = text;
+			return tag;
+		}
+
+		function regionTag(t) {
+			var tag = document.createElement('t-tag');
+			var theme = 'default', variant = 'outline';
+			if (t.region === 'cn') { theme = 'primary'; variant = 'light-outline'; }
+			else if (t.region === 'overseas') { theme = 'warning'; variant = 'light-outline'; }
+			tag.setAttribute('theme', theme);
+			tag.setAttribute('variant', variant);
+			tag.textContent = common.regionText(t.region);
+			return tag;
+		}
+
 		function renderList(list) {
 			common.clear(tbody);
 			targets = list;
-			sumIconBox.innerHTML = icons.multiTarget(list, 34);
+			sumIconBox.innerHTML = icons.multiTarget(list, 30);
 			if (!list.length) {
 				var tr0 = common.el('tr', '');
 				var td0 = common.el('td', 'nm-empty', _('No targets'));
 				td0.colSpan = 12;
+				td0.style.padding = '36px';
+				td0.style.textAlign = 'center';
 				tr0.appendChild(td0);
 				tbody.appendChild(tr0);
 				return;
@@ -119,11 +172,10 @@ return view.extend({
 			for (var i = 0; i < list.length; i++) {
 				(function(t, idx) {
 					var tr = common.el('tr', '');
-					/* UCI 段名挂到行上：实机验证脚本据此定位「哪一行是哪个目标」，
-					 * 不必依赖行序（行序会被新增/删除打乱）。 */
 					tr.setAttribute('data-id', t.id);
 
 					var tdChk = common.el('td', '');
+					tdChk.style.textAlign = 'center';
 					var cb = common.el('input', '');
 					cb.type = 'checkbox';
 					cb.checked = !!checked[t.id];
@@ -131,31 +183,19 @@ return view.extend({
 					tdChk.appendChild(cb);
 					tr.appendChild(tdChk);
 
-					tr.appendChild(common.el('td', '', t.name || t.id));
+					tr.appendChild(common.el('td', 'nm-target-name', t.name || t.id));
 					tr.appendChild(common.el('td', 'nm-target-host', t.host || ''));
 
-					/* 探测方式列：显示的端口取自该目标的 tcp_port，
-					 * 未单独指定时回落到全局默认端口（与守护进程的取值规则一致）。 */
 					var tdMethod = common.el('td', '');
-					var badge, badgeTitle;
-					if (t.proto === 'tcp') {
-						var tport = (t.tcp_port || 0) > 0
-							? t.tcp_port : (cfg.default_tcp_port || 80);
-						badge = 'TCP:' + tport;
-						badgeTitle = _('TCP connect') +
-							(((t.tcp_port || 0) > 0) ? '' : ' · ' + _('global default port'));
-					} else {
-						badge = 'ICMP';
-						badgeTitle = _('ICMP (ping)');
-					}
-					var bspan = common.el('span',
-						'nm-proto-badge nm-proto-' + (t.proto === 'tcp' ? 'tcp' : 'icmp'), badge);
-					bspan.title = badgeTitle;
-					tdMethod.appendChild(bspan);
+					var badge = protoTag(t);
+					badge.title = (t.proto === 'tcp')
+						? (_('TCP connect') + (((t.tcp_port || 0) > 0) ? '' : ' · ' + _('global default port')))
+						: _('ICMP (ping)');
+					tdMethod.appendChild(badge);
 					tr.appendChild(tdMethod);
 
 					var tdR = common.el('td', '');
-					tdR.appendChild(common.el('span', common.regionTagClass(t.region), common.regionText(t.region)));
+					tdR.appendChild(regionTag(t));
 					tr.appendChild(tdR);
 
 					tr.appendChild(common.el('td', '', t.label || '—'));
@@ -163,43 +203,45 @@ return view.extend({
 					var fam = { auto: _('Auto'), ipv4: _('IPv4'), ipv6: _('IPv6'), both: _('IPv4 + IPv6') };
 					var tdFam = common.el('td', '');
 					tdFam.style.whiteSpace = 'nowrap';
-					/* 双栈图标直接反映该目标配置的地址族：ipv4/ipv6 时另一侧变灰 */
-					tdFam.appendChild(common.inlineIcon(icons.dualStack(t.family, true, true, 22)));
+					tdFam.appendChild(common.inlineIcon(icons.dualStack(t.family, true, true, 20)));
 					tdFam.appendChild(document.createTextNode(' ' + (fam[t.family] || t.family)));
 					tr.appendChild(tdFam);
+
 					tr.appendChild(common.el('td', 'nm-num', (t.interval || 0) === 0 ? _('Global') : (t.interval + 's')));
 					tr.appendChild(common.el('td', 'nm-num', (t.timeout || 0) === 0 ? _('Global') : (t.timeout + 's')));
 					tr.appendChild(common.el('td', '', t.interface || '—'));
 
+					/* 启用状态切换开关（TDesign） */
 					var tdEn = common.el('td', '');
 					tdEn.style.whiteSpace = 'nowrap';
-					tdEn.appendChild(common.inlineIcon(icons.online(20, !!t.enabled)));
-					var lab = common.el('label', 'nm-switch');
-					var inp = common.el('input', '');
-					inp.type = 'checkbox';
-					inp.checked = !!t.enabled;
-					inp.addEventListener('change', function() {
-						common.api.updateTarget({ id: t.id, enabled: inp.checked }).then(reload).catch(function(e) {
-							common.notify(String(e.message || e), 'error');
-							inp.checked = !inp.checked;
+					tdEn.appendChild(common.inlineIcon(icons.online(18, !!t.enabled)));
+					var sw = document.createElement('t-switch');
+					sw.value = !!t.enabled;
+					sw.addEventListener('change', function(e) {
+						var v = !!(e.detail && e.detail.value);
+						common.api.updateTarget({ id: t.id, enabled: v }).then(reload).catch(function(err) {
+							common.notify(String(err.message || err), 'error');
+							sw.value = !v;
 						});
 					});
-					lab.appendChild(inp);
-					lab.appendChild(common.el('i', ''));
-					tdEn.appendChild(lab);
+					tdEn.appendChild(sw);
 					tr.appendChild(tdEn);
 
+					/* 操作按钮组（TDesign 文本按钮） */
 					var tdAct = common.el('td', '');
 					tdAct.style.whiteSpace = 'nowrap';
 
-					function mini(label, fn) {
-						var b = common.el('button', 'nm-btn nm-btn-sm', label);
-						b.style.marginRight = '4px';
+					function mini(label, fn, isDanger) {
+						var b = document.createElement('t-button');
+						b.setAttribute('theme', isDanger ? 'danger' : 'default');
+						b.setAttribute('variant', 'text');
+						b.setAttribute('size', 'small');
+						b.textContent = label;
 						b.addEventListener('click', function() {
-							b.disabled = true;
+							b.setAttribute('disabled', '');
 							Promise.resolve(fn()).then(reload).catch(function(e) {
 								common.notify(String(e.message || e), 'error');
-							}).then(function() { b.disabled = false; });
+							}).then(function() { b.removeAttribute('disabled'); });
 						});
 						return b;
 					}
@@ -212,7 +254,7 @@ return view.extend({
 						if (!window.confirm(_('Delete this target?') + ' (' + (t.name || t.id) + ')'))
 							return Promise.resolve();
 						return common.api.deleteTarget(t.id);
-					}));
+					}, true));
 
 					tr.appendChild(tdAct);
 					tbody.appendChild(tr);
@@ -220,134 +262,155 @@ return view.extend({
 			}
 		}
 
-		/* 编辑弹窗 */
+		/* 编辑弹窗（TDesign t-dialog + t-input / t-select / t-input-number / t-switch） */
 		function openEditor(t) {
-			var modal = common.el('div', 'nm-modal');
-			var box = common.el('div', 'nm-modal-box');
+			var modal = document.createElement('t-dialog');
+			modal.setAttribute('header', t ? _('Edit target') : _('Add target'));
+			modal.setAttribute('width', '560px');
+			modal.visible = true;
 
-			box.appendChild(common.el('h3', 'nm-modal-title', t ? _('Edit target') : _('Add target')));
-
+			var body = common.el('div', 'nm-dialog-body');
 			var fields = {};
 
 			function field(label, key, control) {
 				var f = common.el('div', 'nm-field');
-				/* 把 UCI 键名挂到「控件」上（不要挂到 .nm-field 容器：
-				 * 容器在 DOM 里排在前面，会让 [data-nm-key=x] 选中容器，
-				 * 赋值变成给 div 挂临时属性，输入框纹丝不动，
-				 * 实机验证会得到「看起来成功、实际没保存」的假象）。 */
 				control.setAttribute('data-nm-key', key);
 				f.appendChild(common.el('label', '', label));
 				f.appendChild(control);
 				fields[key] = control;
-				box.appendChild(f);
+				body.appendChild(f);
 			}
 
-			function input(cls, value) {
-				var i = common.el('input', cls || 'nm-input');
-				i.value = (value == null ? '' : value);
-				i.type = 'text';
+			function tinput(value, extra) {
+				var i = document.createElement('t-input');
+				if (value != null && value !== '') i.value = String(value);
+				if (extra) {
+					if (extra.placeholder) i.setAttribute('placeholder', extra.placeholder);
+					if (extra.maxlength) i.setAttribute('maxlength', String(extra.maxlength));
+				}
 				return i;
 			}
 
-			function select(options, value) {
-				var s = common.el('select', 'nm-select');
-				options.forEach(function(o) {
-					var op = common.el('option', '', o[1]);
-					op.value = o[0];
-					s.appendChild(op);
-				});
+			function tnum(value, extra) {
+				var n = document.createElement('t-input-number');
+				if (value != null) n.value = value;
+				if (extra) {
+					if (extra.min != null) n.min = extra.min;
+					if (extra.max != null) n.max = extra.max;
+				}
+				return n;
+			}
+
+			function tselect(options, value) {
+				var s = document.createElement('t-select');
+				s.options = options;
 				s.value = value;
 				return s;
 			}
 
-			/* 探测方式：icmp 默认；tcp 需要端口，端口留 0 表示跟随全局默认端口。
-			 * 端口输入框在 icmp 下置灰（而不是隐藏），避免出现「选项不见了」的困惑。 */
-			var protoSel = select([
-				['icmp', _('ICMP (ping)')], ['tcp', _('TCP connect')]
+			var protoSel = tselect([
+				{ label: _('ICMP (ping)'), value: 'icmp' },
+				{ label: _('TCP connect'), value: 'tcp' }
 			], t ? (t.proto || 'icmp') : (cfg.default_proto || 'icmp'));
 
-			var portInp = input('', (t && t.tcp_port) ? t.tcp_port : '');
-			portInp.type = 'number';
-			portInp.min = '0';
-			portInp.max = '65535';
+			var portInp = tnum((t && t.tcp_port) ? t.tcp_port : 0, { min: 0, max: 65535 });
 
 			function syncProto() {
 				var isTcp = (protoSel.value === 'tcp');
 				portInp.disabled = !isTcp;
-				portInp.placeholder = isTcp
+				portInp.setAttribute('placeholder', isTcp
 					? String(cfg.default_tcp_port || 80)
-					: _('Not used by ICMP');
-				portInp.style.opacity = isTcp ? '' : '0.5';
+					: _('Not used by ICMP'));
+				portInp.style.opacity = isTcp ? '1' : '0.5';
 			}
 			protoSel.addEventListener('change', syncProto);
 
-			field(_('Name'), 'name', input('', t ? t.name : ''));
-			field(_('Address'), 'host', input('', t ? t.host : ''));
+			field(_('Name'), 'name', tinput(t ? t.name : ''));
+			field(_('Address'), 'host', tinput(t ? t.host : ''));
 			field(_('Probe method'), 'proto', protoSel);
 			field(_('TCP port (0 = global default)'), 'tcp_port', portInp);
-			field(_('Region'), 'region', select([
-				['cn', _('China')], ['overseas', _('Overseas')], ['other', _('Other')]
+			field(_('Region'), 'region', tselect([
+				{ label: _('China'), value: 'cn' },
+				{ label: _('Overseas'), value: 'overseas' },
+				{ label: _('Other'), value: 'other' }
 			], t ? t.region : 'cn'));
-			field(_('Custom label'), 'label', input('', t ? t.label : ''));
-			field(_('Address family'), 'family', select([
-				['auto', _('Auto')], ['ipv4', _('IPv4 only')], ['ipv6', _('IPv6 only')], ['both', _('IPv4 + IPv6')]
+			field(_('Custom label'), 'label', tinput(t ? t.label : ''));
+			field(_('Address family'), 'family', tselect([
+				{ label: _('Auto'), value: 'auto' },
+				{ label: _('IPv4 only'), value: 'ipv4' },
+				{ label: _('IPv6 only'), value: 'ipv6' },
+				{ label: _('IPv4 + IPv6'), value: 'both' }
 			], t ? t.family : 'auto'));
-			field(_('Check interval (s, 0 = global)'), 'interval', input('', t ? t.interval : 0));
-			field(_('Timeout (s, 0 = global)'), 'timeout', input('', t ? t.timeout : 0));
-			field(_('Interface (optional)'), 'interface', input('', t ? t.interface : ''));
-			field(_('Source address (optional)'), 'source', input('', t ? t.source : ''));
-			field(_('Remark'), 'remark', input('', t ? t.remark : ''));
+			field(_('Check interval (s, 0 = global)'), 'interval', tnum(t ? t.interval : 0, { min: 0, max: 86400 }));
+			field(_('Timeout (s, 0 = global)'), 'timeout', tnum(t ? t.timeout : 0, { min: 0, max: 600 }));
+			field(_('Interface (optional)'), 'interface', tinput(t ? t.interface : ''));
+			field(_('Source address (optional)'), 'source', tinput(t ? t.source : ''));
+			field(_('Remark'), 'remark', tinput(t ? t.remark : ''));
 			syncProto();
 
 			var enRow = common.el('div', 'nm-row');
-			var lab = common.el('label', 'nm-switch');
-			var enInp = common.el('input', '');
-			enInp.type = 'checkbox';
-			enInp.checked = t ? !!t.enabled : true;
-			lab.appendChild(enInp);
-			lab.appendChild(common.el('i', ''));
-			lab.appendChild(common.el('span', '', _('Enabled')));
-			enRow.appendChild(lab);
-			box.appendChild(enRow);
+			enRow.style.display = 'flex';
+			enRow.style.alignItems = 'center';
+			enRow.style.gap = '10px';
+			enRow.style.margin = '10px 0';
+			var enSw = document.createElement('t-switch');
+			enSw.value = t ? !!t.enabled : true;
+			enRow.appendChild(enSw);
+			enRow.appendChild(common.el('span', '', _('Enabled')));
+			body.appendChild(enRow);
 
 			var errBox = common.el('div', 'nm-modal-error');
-			box.appendChild(errBox);
+			body.appendChild(errBox);
 
-			var actions = common.el('div', 'nm-modal-actions');
-			var btnCancel = common.el('button', 'nm-btn', _('Cancel'));
-			/* 弹窗里唯一的保存入口。它是模态对话框自己的确认动作，
-			 * 不是页面级的第二个「保存并应用」——页面底部那组由 LuCI 主题
-			 * 渲染的按钮保持原样，插件不另外添加，避免两个入口并存。
-			 * 弹窗打开时它被遮罩完全盖住，两者不会同时出现在视野里。 */
-			var btnSave = common.el('button', 'nm-btn nm-btn-primary', _('Save & Apply'));
+			modal.appendChild(body);
+
+			var footer = common.el('div', 'nm-modal-actions');
+			var btnCancel = document.createElement('t-button');
+			btnCancel.setAttribute('theme', 'default');
+			btnCancel.setAttribute('variant', 'outline');
+			btnCancel.textContent = _('Cancel');
+			var btnSave = document.createElement('t-button');
+			btnSave.setAttribute('theme', 'primary');
+			btnSave.textContent = _('Save & Apply');
+			footer.appendChild(btnCancel);
+			footer.appendChild(btnSave);
+
+			var slot = common.el('div');
+			slot.setAttribute('slot', 'footer');
+			slot.appendChild(footer);
+			modal.appendChild(slot);
 
 			function close() {
+				modal.visible = false;
 				if (modal.parentNode) modal.parentNode.removeChild(modal);
 			}
 			btnCancel.addEventListener('click', close);
+			/* t-dialog 关闭（遮罩 / ESC）后同步移除节点，避免残留 */
+			modal.addEventListener('visible-change', function(e) {
+				if (!(e.detail === true)) close();
+			});
 
 			btnSave.addEventListener('click', function() {
 				var proto = fields.proto.value;
 				var port = parseInt(fields.tcp_port.value, 10);
 				if (isNaN(port) || port < 0) port = 0;
 				if (port > 65535) port = 65535;
-				/* ICMP 目标不保留端口，统一存 0，避免切换协议后残留旧端口 */
 				if (proto !== 'tcp') port = 0;
 
 				var data = {
-					name: fields.name.value.trim(),
-					host: fields.host.value.trim(),
+					name: String(fields.name.value || '').trim(),
+					host: String(fields.host.value || '').trim(),
 					proto: proto,
 					tcp_port: port,
 					region: fields.region.value,
-					label: fields.label.value.trim(),
+					label: String(fields.label.value || '').trim(),
 					family: fields.family.value,
 					interval: parseInt(fields.interval.value, 10) || 0,
 					timeout: parseInt(fields.timeout.value, 10) || 0,
-					interface: fields.interface.value.trim(),
-					source: fields.source.value.trim(),
-					remark: fields.remark.value.trim(),
-					enabled: enInp.checked ? '1' : '0'
+					interface: String(fields.interface.value || '').trim(),
+					source: String(fields.source.value || '').trim(),
+					remark: String(fields.remark.value || '').trim(),
+					enabled: enSw.value ? '1' : '0'
 				};
 				if (!data.name || !data.host) {
 					errBox.textContent = _('Name and address are required');
@@ -357,25 +420,9 @@ return view.extend({
 					errBox.textContent = _('TCP targets need a port or a global default port');
 					return;
 				}
-				btnSave.disabled = true;
-				btnCancel.disabled = true;
+				btnSave.setAttribute('disabled', '');
+				btnCancel.setAttribute('disabled', '');
 
-				/* 「保存」与「应用」都复用 OpenWRT 自带的机制：
-				 *
-				 *   写配置  common.saveConfig / common.addSection
-				 *           → 原生 uci 事务（uci.set/unset/add），把改动推入
-				 *             rpcd 会话的「待应用更改」；此时只进会话，不落盘
-				 *
-				 *   应用    common.applyChanges()
-				 *           → LuCI「保存并应用」按钮背后的 ui.changes.apply(true)，
-				 *             即 POST admin/uci/apply_rollback →
-				 *             ubus call uci apply { rollback:true, timeout>=90 }
-				 *             → 提交配置 + /sbin/reload_config → procd reload
-				 *               trigger 触发 /etc/init.d/netmonitor reload
-				 *
-				 * 应用过程本身也由 LuCI 负责：官方的「正在应用配置更改… Ns」
-				 * 提示、连接性变更确认、应用后失联的自动回滚、成功后重载页面，
-				 * 插件都不再自建一套，因此不存在两条提交通道并存的差异。 */
 				var p;
 				if (t) {
 					var ops = [];
@@ -386,38 +433,21 @@ return view.extend({
 					p = common.addSection('netmonitor', 'target', data);
 				}
 				p.then(function(changed) {
-					/* changed 为 0 表示填的值与设备现状完全一致。此时不能调用
-					 * applyChanges()：没有待提交改动时 rpcd 的 uci.apply 会直接
-					 * 报错（实测 ubus code 5）。 */
 					if (changed === 0) {
 						close();
 						common.notify(_('No changes to save'));
 						return;
 					}
 					close();
-					/* 这里刻意不刷新表格：改动还在 rpcd 会话里、尚未落盘，
-					 * 立即回读只会拿到旧值。官方 apply 完成后 LuCI 会重载页面，
-					 * 届时读到的就是新配置。 */
 					return common.applyChanges();
 				}).catch(function(e) {
-					/* 写入阶段失败时弹窗还在，错误照常显示在弹窗内；
-					 * 应用阶段失败时弹窗已关闭，由 LuCI 自己的状态提示负责告知。 */
-					if (!modal.parentNode)
-						return;
+					if (!modal.parentNode) return;
 					errBox.textContent = String(e.message || e);
-					btnSave.disabled = false;
-					btnCancel.disabled = false;
+					btnSave.removeAttribute('disabled');
+					btnCancel.removeAttribute('disabled');
 				});
 			});
 
-			actions.appendChild(btnCancel);
-			actions.appendChild(btnSave);
-			box.appendChild(actions);
-
-			modal.appendChild(box);
-			modal.addEventListener('click', function(ev) {
-				if (ev.target === modal) close();
-			});
 			document.body.appendChild(modal);
 			return Promise.resolve();
 		}

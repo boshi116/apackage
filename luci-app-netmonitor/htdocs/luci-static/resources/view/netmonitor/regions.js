@@ -1,5 +1,8 @@
 /*
  * 国内 / 国外页面：分区指标对比 + 区域平均延迟曲线
+ * TDesign Web Components 重构版本
+ * 工具栏 / 区域对比卡 / 折线对比卡 / 分区明细表由 <t-*> 组件承载，
+ * 动态环形指标与折线对比沿用自研 SVG 与原有逻辑。
  */
 
 'use strict';
@@ -17,13 +20,17 @@ var RANGES = [
 return view.extend({
 	load: function() {
 		common.css();
-		return Promise.all([common.loadI18n(), common.api.getConfig()]);
+		return Promise.all([
+			common.loadI18n(),
+			common.tdesign(),
+			common.api.getConfig()
+		]);
 	},
 
 	render: function(res) {
 		common.css();
 
-		var cfg = (res && res[1]) || {};
+		var cfg = (res && res[2]) || {};
 		var refresh = Math.max(5, parseInt(cfg.ui_refresh, 10) || 2);
 		var range = '1h';
 		var data = null;
@@ -33,63 +40,79 @@ return view.extend({
 		var page = common.el('div', 'nm-page');
 		root.appendChild(page);
 
-		var bar = common.el('div', 'nm-card');
-		var row = common.el('div', 'nm-row');
-		var fRange = common.el('div', 'nm-field');
-		var selRange = common.el('select', 'nm-select');
-		RANGES.forEach(function(r) {
-			var op = common.el('option', '', _(r[1]));
-			op.value = r[0];
-			selRange.appendChild(op);
+		/* 工具栏（TDesign 视觉卡） */
+		var bar = common.tcard();
+		var row = common.el('div', 'nm-toolbar-row');
+
+		var fRange = common.el('div', 'nm-field-glass');
+		var selRange = document.createElement('t-select');
+		selRange.options = RANGES.map(function(r) {
+			return { label: _(r[1]), value: r[0] };
 		});
 		selRange.value = range;
 		selRange.addEventListener('change', function() { range = selRange.value; reload(true); });
 		fRange.appendChild(common.el('label', '', _('Time range')));
 		fRange.appendChild(selRange);
 		row.appendChild(fRange);
+
+		var spacer = common.el('div', 'nm-spacer');
+		spacer.style.flex = '1';
+		row.appendChild(spacer);
 		bar.appendChild(row);
 		page.appendChild(bar);
 
-		var grid = common.el('div', 'nm-grid');
+		/* 顶部两个区域指标卡片网格 */
+		var grid = common.el('div', 'nm-regions-grid');
 		page.appendChild(grid);
 
-		var compare = common.el('div', 'nm-card');
-		var cmpTitle = common.el('div', 'nm-row');
-		cmpTitle.appendChild(common.inlineIcon(icons.trend(36)));
-		cmpTitle.appendChild(common.el('div', 'nm-card-title', _('Region latency comparison')));
+		/* 区域平均延迟对比折线图（TDesign 视觉卡） */
+		var compare = common.tcard('nm-compare-card');
+		var cmpTitle = common.el('div', 'nm-panel-title-row');
+		cmpTitle.appendChild(common.inlineIcon(icons.trend(32)));
+		cmpTitle.appendChild(common.el('div', 'nm-panel-title', _('Region latency comparison')));
 		compare.appendChild(cmpTitle);
-		var compareBox = common.el('div', 'nm-chart-box');
+
+		var compareBox = common.el('div', 'nm-chart-box nm-chart-box-glass');
 		compare.appendChild(compareBox);
+
 		var compareLegend = common.el('div', 'nm-chart-legend');
 		compare.appendChild(compareLegend);
 		page.appendChild(compare);
 
-		var lists = common.el('div', 'nm-grid-wide');
+		/* 分区明细表格容器 */
+		var lists = common.el('div', 'nm-tables-grid');
 		page.appendChild(lists);
 
-		function regionCard(title, x, icon) {
-			var c = common.el('div', 'nm-card nm-card-hi');
-			var head = common.el('div', 'nm-row');
-			head.appendChild(common.el('div', 'nm-card-title', title));
-			head.appendChild(common.el('div', 'nm-spacer'));
-			head.appendChild(common.el('span', 'nm-tag', (x.total || 0) + ' ' + _('Target count')));
+		function regionCard(title, x, icon, regKey) {
+			var c = common.tcard('nm-region-card');
+
+			/* 头部：标题与目标数胶囊（t-tag） */
+			var head = common.el('div', 'nm-region-header');
+			head.appendChild(common.el('div', 'nm-region-title', title));
+			var tag = document.createElement('t-tag');
+			tag.setAttribute('theme', regKey === 'cn' ? 'primary' : 'warning');
+			tag.setAttribute('variant', 'light');
+			tag.textContent = (x.total || 0) + ' ' + _('Target count');
+			head.appendChild(tag);
 			c.appendChild(head);
 
-			/* 区域图标与区域真实延迟并排：图标中的节点颜色由 abnormal 决定，
-			 * 因此「图标本身就是该区域的健康度」 */
-			var body = common.el('div', 'nm-icon-card');
-			body.appendChild(common.svgBox(icon, 'nm-icon-card-svg'));
-			var right = common.el('div', 'nm-icon-card-body');
-			right.appendChild(common.el('div', 'nm-card-value ' + ((x.abnormal > 0) ? 'nm-c-warn' : 'nm-c-ok'),
-				common.fmt.latency(x.avg) + ' ms'));
-			right.appendChild(common.el('div', 'nm-card-sub', _('Average latency')));
-			body.appendChild(right);
-			c.appendChild(body);
+			/* 主视觉展台：SVG 与主读数 */
+			var heroBox = common.el('div', 'nm-region-hero');
+			var svgWrap = common.el('div', 'nm-region-svg-box nm-svg-soft-pulse');
+			svgWrap.appendChild(common.svgBox(icon, 'nm-icon-card-svg'));
+			heroBox.appendChild(svgWrap);
 
-			var m = common.el('div', 'nm-target-metrics');
-			m.style.marginTop = '10px';
+			var right = common.el('div', 'nm-region-hero-right');
+			var valCls = (x.abnormal > 0) ? 'nm-c-warn' : 'nm-c-ok';
+			right.appendChild(common.el('div', 'nm-region-avg-val ' + valCls, common.fmt.latency(x.avg) + ' ms'));
+			right.appendChild(common.el('div', 'nm-region-avg-label', _('Average latency')));
+			heroBox.appendChild(right);
+			c.appendChild(heroBox);
+
+			/* 6 项微型指标网格 */
+			var m = common.el('div', 'nm-region-metrics-grid');
 			function mm(label, value) {
-				var d = common.el('div', 'nm-metric');
+				var d = common.el('div', 'nm-mini-metric');
 				d.appendChild(common.el('span', '', label));
 				d.appendChild(common.el('b', '', value));
 				return d;
@@ -102,9 +125,10 @@ return view.extend({
 			m.appendChild(mm(_('Total'), String(x.total || 0)));
 			c.appendChild(m);
 
-			var rings = common.el('div', 'nm-target-rings');
+			/* 环形指标胶囊行 */
+			var rings = common.el('div', 'nm-target-rings-row');
 			function ring(svg, label, value, cls) {
-				var box = common.el('div', 'nm-ring-item');
+				var box = common.el('div', 'nm-ring-card');
 				box.appendChild(common.svgBox(svg, 'nm-ring-svg'));
 				var txt = common.el('div', 'nm-ring-text');
 				txt.appendChild(common.el('b', cls || '', value));
@@ -118,13 +142,15 @@ return view.extend({
 				common.fmt.percent(x.online_rate, 0),
 				(x.online_rate >= 99) ? 'nm-c-ok' : (x.online_rate >= 95 ? 'nm-c-warn' : 'nm-c-bad')));
 			c.appendChild(rings);
+
 			return c;
 		}
 
 		function regionTargets(region) {
-			var box = common.el('div', 'nm-card');
-			box.appendChild(common.el('div', 'nm-card-title',
-				(region === 'cn' ? _('China network') : (region === 'overseas' ? _('Overseas network') : _('Other')))));
+			var box = common.tcard('nm-subtable-card');
+			var regTitle = (region === 'cn' ? _('China network') : (region === 'overseas' ? _('Overseas network') : _('Other')));
+			box.appendChild(common.el('div', 'nm-region-title', regTitle));
+
 			var wrap = common.el('div', 'nm-table-wrap');
 			var tb = common.el('table', 'nm-table');
 			var thead = common.el('thead', '');
@@ -146,13 +172,15 @@ return view.extend({
 				var tr0 = common.el('tr', '');
 				var td0 = common.el('td', 'nm-empty', _('No targets'));
 				td0.colSpan = 6;
+				td0.style.padding = '24px';
+				td0.style.textAlign = 'center';
 				tr0.appendChild(td0);
 				tbody.appendChild(tr0);
 			}
 			for (var i = 0; i < list.length; i++) {
 				var t = list[i];
 				var r = common.el('tr', '');
-				r.appendChild(common.el('td', '', t.name || t.id));
+				r.appendChild(common.el('td', 'nm-target-name', t.name || t.id));
 				r.appendChild(common.el('td', 'nm-num ' + common.gradeClass(t.grade), common.fmt.latency(t.latency)));
 				r.appendChild(common.el('td', 'nm-num', common.fmt.latency(t.avg)));
 				r.appendChild(common.el('td', 'nm-num', common.fmt.latency(t.p95)));
@@ -163,7 +191,7 @@ return view.extend({
 			return box;
 		}
 
-		/* 按区域把多个目标的点合并为一条平均曲线 */
+		/* 按区域合并平均曲线 */
 		function regionSeries(region) {
 			if (!data) return [];
 			var buckets = 60;
@@ -202,13 +230,16 @@ return view.extend({
 			var series = [];
 			var cn = regionSeries('cn');
 			var ov = regionSeries('overseas');
-			if (cn.length) series.push({ name: _('China'), color: '#2f6fed', points: cn });
-			if (ov.length) series.push({ name: _('Overseas'), color: '#8a63d2', points: ov });
+			if (cn.length) series.push({ name: _('China'), color: '#3b82f6', points: cn });
+			if (ov.length) series.push({ name: _('Overseas'), color: '#8b5cf6', points: ov });
 			if (!series.length) {
-				compareBox.appendChild(common.el('div', 'nm-empty', _('No data in this range')));
+				var emptyEl = common.el('div', 'nm-empty', _('No data in this range'));
+				emptyEl.style.padding = '36px';
+				emptyEl.style.textAlign = 'center';
+				compareBox.appendChild(emptyEl);
 				return;
 			}
-			chart.mount(compareBox, series, { height: 240 });
+			chart.mount(compareBox, series, { height: 260 });
 			for (var i = 0; i < series.length; i++) {
 				var item = common.el('span', '');
 				var ic = common.el('i', '');
@@ -222,8 +253,8 @@ return view.extend({
 		function renderRegions() {
 			common.clear(grid);
 			var r = (status && status.regions) || {};
-			grid.appendChild(regionCard(_('China network'), r.cn || {}, icons.regionCN(84, r.cn || {})));
-			grid.appendChild(regionCard(_('Overseas network'), r.overseas || {}, icons.regionGlobal(84, r.overseas || {})));
+			grid.appendChild(regionCard(_('China network'), r.cn || {}, icons.regionCN(84, r.cn || {}), 'cn'));
+			grid.appendChild(regionCard(_('Overseas network'), r.overseas || {}, icons.regionGlobal(84, r.overseas || {}), 'ov'));
 
 			common.clear(lists);
 			lists.appendChild(regionTargets('cn'));
@@ -241,7 +272,9 @@ return view.extend({
 				drawCompare();
 			}).catch(function(e) {
 				common.clear(compareBox);
-				compareBox.appendChild(common.el('div', 'nm-empty', String(e.message || e)));
+				var errEl = common.el('div', 'nm-empty', String(e.message || e));
+				errEl.style.padding = '24px';
+				compareBox.appendChild(errEl);
 			});
 		}
 

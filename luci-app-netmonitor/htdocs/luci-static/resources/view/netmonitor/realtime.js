@@ -1,6 +1,9 @@
 /*
  * 实时监控页面：以表格形式列出所有目标的实时状态
- * 手机端表格可横向滚动，不出现页面溢出。
+ * TDesign Web Components 重构版本
+ * 工具栏 / 筛选 / 指标速览卡由 <t-*> 组件承载，
+ * 明细表格保留 .nm-table 平面结构，动态呼吸 LED 与实时指标条保留。
+ * 手机端表格可横向平滑滚动，并支持自适应卡片流展示。
  */
 
 'use strict';
@@ -12,13 +15,17 @@
 return view.extend({
 	load: function() {
 		common.css();
-		return Promise.all([common.loadI18n(), common.api.getConfig()]);
+		return Promise.all([
+			common.loadI18n(),
+			common.tdesign(),
+			common.api.getConfig()
+		]);
 	},
 
 	render: function(res) {
 		common.css();
 
-		var cfg = (res && res[1]) || {};
+		var cfg = (res && res[2]) || {};
 		var refresh = Math.max(1, parseInt(cfg.ui_refresh, 10) || 2);
 
 		var filterRegion = 'all';
@@ -31,71 +38,95 @@ return view.extend({
 		var page = common.el('div', 'nm-page');
 		root.appendChild(page);
 
-		/* 工具栏 */
-		var bar = common.el('div', 'nm-card');
-		var barRow = common.el('div', 'nm-row');
+		/* 工具栏（TDesign 视觉卡） */
+		var bar = common.tcard();
+		var barRow = common.el('div', 'nm-toolbar-row');
 
-		var fRegion = common.el('div', 'nm-field');
-		var selRegion = common.el('select', 'nm-select');
-		[
-			['all', _('All regions')],
-			['cn', _('China')],
-			['overseas', _('Overseas')],
-			['other', _('Other')]
-		].forEach(function(o) {
-			var op = common.el('option', '', o[1]);
-			op.value = o[0];
-			selRegion.appendChild(op);
+		/* 区域筛选 */
+		var fRegion = common.el('div', 'nm-field-glass');
+		var selRegion = document.createElement('t-select');
+		selRegion.options = [
+			{ label: _('全部区域'), value: 'all' },
+			{ label: _('国内'), value: 'cn' },
+			{ label: _('国外'), value: 'overseas' },
+			{ label: _('其他'), value: 'other' }
+		];
+		selRegion.value = 'all';
+		selRegion.addEventListener('change', function() {
+			filterRegion = selRegion.value;
+			renderTable();
 		});
-		selRegion.addEventListener('change', function() { filterRegion = selRegion.value; renderTable(); });
-		fRegion.appendChild(common.el('label', '', _('Region')));
+		fRegion.appendChild(common.el('label', '', _('区域')));
 		fRegion.appendChild(selRegion);
 		barRow.appendChild(fRegion);
 
-		var fStatus = common.el('div', 'nm-field');
-		var selStatus = common.el('select', 'nm-select');
-		[
-			['all', _('All status')],
-			['online', _('Online')],
-			['failed', _('Failed')],
-			['disabled', _('Disabled')]
-		].forEach(function(o) {
-			var op = common.el('option', '', o[1]);
-			op.value = o[0];
-			selStatus.appendChild(op);
+		/* 状态筛选 */
+		var fStatus = common.el('div', 'nm-field-glass');
+		var selStatus = document.createElement('t-select');
+		selStatus.options = [
+			{ label: _('全部状态'), value: 'all' },
+			{ label: _('在线'), value: 'online' },
+			{ label: _('失败'), value: 'failed' },
+			{ label: _('停用'), value: 'disabled' }
+		];
+		selStatus.value = 'all';
+		selStatus.addEventListener('change', function() {
+			filterStatus = selStatus.value;
+			renderTable();
 		});
-		selStatus.addEventListener('change', function() { filterStatus = selStatus.value; renderTable(); });
-		fStatus.appendChild(common.el('label', '', _('Status')));
+		fStatus.appendChild(common.el('label', '', _('状态')));
 		fStatus.appendChild(selStatus);
 		barRow.appendChild(fStatus);
 
-		var fKw = common.el('div', 'nm-field');
-		var inKw = common.el('input', 'nm-input');
-		inKw.type = 'search';
-		inKw.placeholder = _('Search name or address');
-		inKw.addEventListener('input', function() { keyword = inKw.value.toLowerCase(); renderTable(); });
-		fKw.appendChild(common.el('label', '', _('Search')));
+		/* 关键字搜索 */
+		var fKw = common.el('div', 'nm-field-glass');
+		var inKw = document.createElement('t-input');
+		inKw.setAttribute('placeholder', _('搜索名称或地址'));
+		inKw.addEventListener('input', function() {
+			keyword = String(inKw.value || '').toLowerCase();
+			renderTable();
+		});
+		fKw.appendChild(common.el('label', '', _('搜索')));
 		fKw.appendChild(inKw);
 		barRow.appendChild(fKw);
 
-		barRow.appendChild(common.el('div', 'nm-spacer'));
+		var spacer = common.el('div', 'nm-spacer');
+		spacer.style.flex = '1';
+		barRow.appendChild(spacer);
 
-		var btnPause = common.el('button', 'nm-btn', _('Pause'));
+		/* 暂停 / 恢复按钮（t-button） */
+		var btnPause = document.createElement('t-button');
+		btnPause.setAttribute('theme', 'default');
+		btnPause.setAttribute('variant', 'outline');
+		function updatePauseBtn() {
+			common.clear(btnPause);
+			var ic = common.el('span', 'nm-inline-icon');
+			if (paused) {
+				ic.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4 3l9 5-9 5V3z"/></svg>';
+				btnPause.appendChild(ic);
+				btnPause.appendChild(document.createTextNode(_('Resume')));
+			} else {
+				ic.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4 3h3v10H4V3zm5 0h3v10H9V3z"/></svg>';
+				btnPause.appendChild(ic);
+				btnPause.appendChild(document.createTextNode(_('暂停')));
+			}
+		}
+		updatePauseBtn();
 		btnPause.addEventListener('click', function() {
 			paused = !paused;
-			btnPause.textContent = paused ? _('Resume') : _('Pause');
+			updatePauseBtn();
 		});
 		barRow.appendChild(btnPause);
 
 		bar.appendChild(barRow);
 		page.appendChild(bar);
 
-		/* 实时指标条：与表格同源（同一次 getStatus），不会造成额外探测 */
-		var strip = common.el('div', 'nm-grid');
+		/* 顶部实时指标条 */
+		var strip = common.el('div', 'nm-strip-grid');
 		page.appendChild(strip);
 
-		/* 表格 */
-		var wrap = common.el('div', 'nm-table-wrap');
+		/* 明细表格（平面 .nm-table，桌面显示） */
+		var wrap = common.el('div', 'nm-table-wrap nm-realtime-table-wrap');
 		var table = common.el('table', 'nm-table');
 		var thead = common.el('thead', '');
 		var tbody = common.el('tbody', '');
@@ -105,22 +136,22 @@ return view.extend({
 		page.appendChild(wrap);
 
 		var heads = [
-			'', _('Name'), _('Address'), _('Region'), _('Status'),
-			_('Current'), _('Average'), _('P95'), _('Loss'),
-			_('Availability'), _('Fails'), _('Last check')
+			'', _('名称'), _('地址'), _('区域'), _('状态'),
+			_('当前'), _('平均'), _('P95'), _('丢包'),
+			_('在线率'), _('连续失败'), _('最后检测')
 		];
 		var tr = common.el('tr', '');
 		heads.forEach(function(h) {
-			var th = common.el('th', '', h);
-			tr.appendChild(th);
+			tr.appendChild(common.el('th', '', h));
 		});
 		thead.appendChild(tr);
 
-		/* 卡片视图（窄屏时更友好） */
-		var cards = common.el('div', 'nm-grid-wide');
+		/* 窄屏自适应卡片流容器 */
+		var cards = common.el('div', 'nm-cards-mobile');
 		page.appendChild(cards);
 
-		var foot = common.el('div', 'nm-card nm-card-sub');
+		/* 底部状态提示条（TDesign 视觉卡） */
+		var foot = common.tcard('nm-foot-sub');
 		page.appendChild(foot);
 
 		function match(t) {
@@ -133,15 +164,30 @@ return view.extend({
 			return true;
 		}
 
-		/* 每一行的状态图标按真实的失败类型切换：
-		 * DNS 失败显示地球+叉、超时显示丢包、高延迟显示波形，正常显示在线环。
-		 * 也就是说图标是「诊断结果的可视化」，而不是同一个图标换个颜色。 */
+		/* 状态诊断图标（矢量） */
 		function statusIcon(t) {
-			if (!t.enabled) return icons.online(22, false);
-			if (t.last_error === 'dns') return icons.dnsFail(22);
-			if (t.last_error) return icons.packetLoss(100, 22);
-			if (t.grade === 'poor' || t.grade === 'severe') return icons.highLatency(t.latency, t.grade, 22);
-			return icons.online(22, true);
+			if (!t.enabled) return icons.online(20, false);
+			if (t.last_error === 'dns') return icons.dnsFail(20);
+			if (t.last_error) return icons.packetLoss(100, 20);
+			if (t.grade === 'poor' || t.grade === 'severe') return icons.highLatency(t.latency, t.grade, 20);
+			return icons.online(20, true);
+		}
+
+		/* 动态呼吸 LED 节点 */
+		function createLedIndicator(t) {
+			var w = common.el('div', 'nm-led-box');
+			var cls = 'nm-led-off';
+			if (t.enabled) {
+				if (t.status === 'online') {
+					cls = (t.grade === 'poor' || t.grade === 'severe') ? 'nm-led-warn' : 'nm-led-good';
+				} else {
+					cls = 'nm-led-bad';
+				}
+			}
+			w.classList.add(cls);
+			w.appendChild(common.el('span', 'nm-led-ping-ring', ''));
+			w.appendChild(common.el('span', 'nm-led-center', ''));
+			return w;
 		}
 
 		function gradeFromCfg(ms) {
@@ -157,27 +203,77 @@ return view.extend({
 			return 'severe';
 		}
 
+		/* 区域胶囊标签（t-tag） */
+		function regionTag(t) {
+			var tag = document.createElement('t-tag');
+			var theme = 'default', variant = 'outline';
+			if (t.region === 'cn') { theme = 'primary'; variant = 'light-outline'; }
+			else if (t.region === 'overseas') { theme = 'warning'; variant = 'light-outline'; }
+			tag.setAttribute('theme', theme);
+			tag.setAttribute('variant', variant);
+			tag.textContent = t.label ? t.label : common.regionText(t.region);
+			return tag;
+		}
+
+		/* 指标速览小卡（外层 .nm-tcard） */
+		function makeStripCard(title, val, subText, svgIcon, valCls) {
+			var card = common.tcard();
+			var inner = common.el('div', 'nm-card-inner');
+
+			var head = common.el('div', 'nm-card-header');
+			head.appendChild(common.el('span', 'nm-card-label', title));
+
+			if (svgIcon) {
+				var icoBox = common.el('div', 'nm-card-icon-box');
+				if (typeof svgIcon === 'string') icoBox.innerHTML = svgIcon;
+				else icoBox.appendChild(svgIcon);
+				head.appendChild(icoBox);
+			}
+
+			inner.appendChild(head);
+			inner.appendChild(common.el('div', 'nm-card-number ' + (valCls || ''), val));
+			if (subText) inner.appendChild(common.el('div', 'nm-card-description', subText));
+
+			card.appendChild(inner);
+			return card;
+		}
+
 		function renderStrip(d) {
 			common.clear(strip);
 			var o = d.overall || {};
 			var ok = (o.offline || 0) === 0;
 
-			strip.appendChild(common.iconCard(_('Online targets'),
+			strip.appendChild(makeStripCard(
+				_('在线目标'),
 				String(o.online || 0) + ' / ' + String(o.total || 0),
-				_('Abnormal') + ': ' + (o.offline || 0), icons.online(60, ok),
-				ok ? 'nm-c-ok' : 'nm-c-bad'));
+				_('异常') + ': ' + (o.offline || 0),
+				icons.online(46, ok),
+				ok ? 'nm-c-ok' : 'nm-c-bad'
+			));
 
-			strip.appendChild(common.iconCard(_('Current latency'),
+			var curGrade = gradeFromCfg(o.current);
+			strip.appendChild(makeStripCard(
+				_('当前延迟'),
 				common.fmt.latency(o.current) + ' ms',
-				_('Latest probe round'), icons.latencyDial(o.current, gradeFromCfg(o.current), 60),
-				common.gradeClass(gradeFromCfg(o.current))));
+				_('最近一次检测'),
+				icons.latencyDial(o.current, curGrade, 46),
+				common.gradeClass(curGrade)
+			));
 
-			strip.appendChild(common.iconCard(_('Packet loss'), common.fmt.percent(o.loss),
-				_('Weighted by samples'), icons.lossRing(o.loss, 60),
-				(o.loss > 5) ? 'nm-c-bad' : (o.loss > 0 ? 'nm-c-warn' : 'nm-c-ok')));
+			strip.appendChild(makeStripCard(
+				_('丢包率'),
+				common.fmt.percent(o.loss),
+				_('按样本加权'),
+				icons.lossRing(o.loss, 46),
+				(o.loss > 5) ? 'nm-c-bad' : (o.loss > 0 ? 'nm-c-warn' : 'nm-c-ok')
+			));
 
-			strip.appendChild(common.iconCard(_('Last check'), common.fmt.ago(d.tick),
-				common.fmt.clock(d.tick), icons.clock(d.tick, 60)));
+			strip.appendChild(makeStripCard(
+				_('最后检测'),
+				common.fmt.ago(d.tick),
+				common.fmt.clock(d.tick),
+				icons.clock(d.tick, 46)
+			));
 		}
 
 		function renderTable() {
@@ -191,8 +287,14 @@ return view.extend({
 				var tr0 = common.el('tr', '');
 				var td0 = common.el('td', 'nm-empty', _('No matching targets'));
 				td0.colSpan = heads.length;
+				td0.style.padding = '38px';
+				td0.style.textAlign = 'center';
 				tr0.appendChild(td0);
 				tbody.appendChild(tr0);
+
+				var emptyCard = common.tcard();
+				emptyCard.appendChild(common.el('div', 'nm-empty', _('No matching targets')));
+				cards.appendChild(emptyCard);
 				return;
 			}
 
@@ -200,44 +302,56 @@ return view.extend({
 				var t = list[i];
 				var row = common.el('tr', '');
 
+				// 1. 动态呼吸 LED 状态指示
 				var tdDot = common.el('td', '');
-				tdDot.appendChild(common.el('span', common.dotClass(t.grade), ''));
+				tdDot.style.textAlign = 'center';
+				tdDot.appendChild(createLedIndicator(t));
 				row.appendChild(tdDot);
 
-				row.appendChild(common.el('td', '', t.name || t.id));
+				// 2. 名称
+				row.appendChild(common.el('td', 'nm-target-name', t.name || t.id));
+
+				// 3. 地址
 				row.appendChild(common.el('td', 'nm-target-host', t.host || ''));
 
+				// 4. 区域胶囊
 				var tdRegion = common.el('td', '');
-				tdRegion.appendChild(common.el('span', common.regionTagClass(t.region),
-					t.label ? t.label : common.regionText(t.region)));
+				tdRegion.appendChild(regionTag(t));
 				row.appendChild(tdRegion);
 
-				var stText = t.enabled ? (t.status === 'online' ? _('Online') : _('Failed')) : _('Disabled');
-				if (!t.enabled) stText = _('Disabled');
+				// 5. 状态与诊断图标
+				var stText = t.enabled ? (t.status === 'online' ? _('在线') : _('失败')) : _('停用');
+				if (!t.enabled) stText = _('停用');
 				else if (t.last_error) stText = common.errorText(t.last_error);
+
 				var tdSt = common.el('td', '');
 				tdSt.style.display = 'flex';
 				tdSt.style.alignItems = 'center';
-				tdSt.style.gap = '6px';
+				tdSt.style.gap = '8px';
 				tdSt.appendChild(common.inlineIcon(statusIcon(t)));
 				tdSt.appendChild(common.el('span', common.gradeClass(t.grade), stText));
 				row.appendChild(tdSt);
 
+				// 6-11. 指标数值
 				row.appendChild(common.el('td', 'nm-num', common.fmt.latency(t.latency)));
 				row.appendChild(common.el('td', 'nm-num', common.fmt.latency(t.avg)));
 				row.appendChild(common.el('td', 'nm-num', common.fmt.latency(t.p95)));
 				row.appendChild(common.el('td', 'nm-num', common.fmt.percent(t.loss)));
 				row.appendChild(common.el('td', 'nm-num', common.fmt.percent(t.success_rate, 0)));
 				row.appendChild(common.el('td', 'nm-num', String(t.streak_fail || 0)));
-				row.appendChild(common.el('td', '', common.fmt.ago(t.last_check)));
+
+				// 12. 最后检查时间
+				row.appendChild(common.el('td', 'nm-txt-sub', common.fmt.ago(t.last_check)));
 
 				tbody.appendChild(row);
+
+				// 窄屏卡片构建
 				cards.appendChild(common.targetCard(t));
 			}
 
-			foot.textContent = _('Updated') + ': ' + common.fmt.clock(latest.updated) +
-				' · ' + _('Interval') + ': ' + (cfg.interval || 10) + 's' +
-				' · ' + _('UI refresh') + ': ' + refresh + 's';
+			foot.textContent = _('更新') + ': ' + common.fmt.clock(latest.updated) +
+				' · ' + _('间隔') + ': ' + (cfg.interval || 10) + 's' +
+				' · ' + _('界面刷新') + ': ' + refresh + 's';
 		}
 
 		function update() {
@@ -250,6 +364,7 @@ return view.extend({
 				var tr0 = common.el('tr', '');
 				var td0 = common.el('td', 'nm-empty', String(e.message || e));
 				td0.colSpan = heads.length;
+				td0.style.padding = '28px';
 				tr0.appendChild(td0);
 				tbody.appendChild(tr0);
 			});

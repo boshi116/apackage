@@ -1,50 +1,10 @@
 /*
  * 设置页面：全局参数、后台服务控制、历史数据维护
- *
- * 关键教训（本页曾经「设置项一个都不显示」的真正原因）
- * ---------------------------------------------------------------
- * 旧实现用 `new form.JSONMap({}, ...)` 承载 UCI 表单，5 个分区都是
- * `m.section(form.NamedSection, 'global', 'netmonitor', 标题)`。
- * 对固件里的 /luci-static/resources/form.js 逐行核对后可以确定：
- *
- *   1. CBIJSONMap.__init__ 里 `this.data = new CBIJSONConfig(data)`，
- *      而 CBIJSONConfig.get() 的实现是
- *          get(config, section, option) {
- *              if (section == null) return null;
- *              if (option == null)  return this.data[section];
- *              ...
- *          }
- *      传给 JSONMap 的数据是空对象 {}，于是 get('json', 'global') 返回 undefined。
- *
- *   2. CBINamedSection.render() 正是拿这个值当 ucidata：
- *          render() {
- *              return Promise.all([this.map.data.get(config_name, this.section),
- *                                  this.renderUCISection(this.section)])
- *                     .then(this.renderContents.bind(this));
- *          }
- *      而 renderContents(data) 中只有 `if (ucidata) { ...渲染选项... }` 分支。
- *      ucidata 为假 → 选项整块被跳过，页面上只剩下一个由 section_id 派生的
- *      `<div id="cbi-json-global" class="cbi-section"><h3>标题</h3></div>`，
- *      连 h3 下面的选项容器都不存在。实测 5 个分区全部如此：cbiValue 计数为 0。
- *
- *   3. 顺带确认的两点：
- *      * `m.submit = false` / `m.reset = false` 在本固件版本的 form.js 里
- *        根本没有被引用，是无效写法；
- *      * 该 form.js 也不提供任何 Save / Apply 按钮（全文无 cbi-page-actions /
- *        handleSaveApply），所以旧页面即便渲染出选项也无处保存。
- *
- * 因此本页改为与 overview / targets 等页面一致的纯 DOM 实现。
- *
- * 读取与写入刻意走不同但各自更合适的接口：
- *   * 读取用 get_config RPC：它按后端 DEFAULTS 补齐缺省值并做 clamp，
- *     是默认值语义的唯一权威，界面因此永远显示「设备实际生效的值」；
- *   * 写入用 OpenWrt 原生 uci 事务（uci.set → uci.save() → 推入 rpcd 会话的
- *     「待应用更改」），应用则复用 LuCI「保存并应用」按钮背后的
- *     ui.changes.apply（见 common.applyChanges）：提交配置 →
- *     /sbin/reload_config → procd 的 reload trigger 重载
- *     /etc/init.d/netmonitor，应用后设备失联会自动回滚。
- *   * 保存成功后界面不再自己回读写回值：官方 apply 完成时 LuCI 会重载页面，
- *     重载后看到的一律是「已经落盘生效的值」，不是用户刚敲进去的值。
+ * TDesign Web Components 重构版本
+ * 服务控制 / 速览指标卡 / 分组表单 / 动作栏由 <t-*> 组件承载，
+ * 开关 / 数字输入 / 下拉选择 / 文本输入分别对应 t-switch / t-input-number /
+ * t-select / t-input，动态 SVG 状态图标保留原有实现。
+ * 采用纯 DOM 渲染，杜绝 CBI/JSONMap 静默吞选项问题。
  */
 
 'use strict';
@@ -53,185 +13,178 @@
 'require netmonitor.common as common';
 'require netmonitor.icons as icons';
 
-/* 全局设置字段定义。
- *
- * 这里刻意「全部字段始终可见」：本页此前的故障就是选项被静默丢弃，
- * 所以不再使用 depends() 那种「条件为假就整块不渲染」的机制。
- * 字段的适用范围写进说明文字，靠文字说清楚，不靠隐藏。
- *
- * kind：flag 开关 / int 整数 / enum 下拉 / text 文本
- * 每一项都必须与后端 GLOBAL_OPTS 的键名一一对应。 */
+/* 全局设置字段定义 */
 function fieldGroups() {
 	return [
 		{
-			title: _('Detection'),
-			desc: _('How the background daemon probes every target.'),
-			icon: function() { return icons.ping(46, { grade: 'good' }); },
+			title: _('探测'),
+			desc: _('后台守护进程如何探测每个目标。'),
+			icon: function() { return icons.ping(44, { grade: 'good' }); },
 			fields: [
 				{
 					key: 'enabled', kind: 'flag',
-					title: _('Enable monitoring'),
-					desc: _('Master switch. When disabled the background daemon stops probing.')
+					title: _('启用监控'),
+					desc: _('总开关。关闭后后台守护进程停止探测。')
 				},
 				{
 					key: 'default_proto', kind: 'enum',
-					title: _('Default probe method'),
-					desc: _('ICMP echo (ping) by default. TCP connect measures the TCP handshake time to a port and still works on networks that drop ICMP. A target can override this.'),
-					values: [['icmp', _('ICMP (ping)')], ['tcp', _('TCP connect')]]
+					title: _('默认探测方式'),
+					desc: _('默认使用 ICMP 回显（ping）。TCP 连接测量到指定端口的握手耗时，在丢弃 ICMP 的网络中仍可用；单个目标可单独覆盖此设置。'),
+					values: [['icmp', _('ICMP（ping）')], ['tcp', _('TCP 连接')]]
 				},
 				{
 					key: 'default_tcp_port', kind: 'int', min: 1, max: 65535,
-					title: _('Default TCP port'),
-					desc: _('Used by TCP targets that do not specify a port of their own. Allowed range 1-65535.')
+					title: _('默认 TCP 端口'),
+					desc: _('供未指定端口的 TCP 目标使用，允许范围 1-65535。')
 				},
 				{
 					key: 'interval', kind: 'int', min: 1, max: 3600,
-					title: _('Check interval (seconds)'),
-					desc: _('Recommended values: 1, 5, 10, 15, 30, 60, 120, 300. Allowed range 1-3600.')
+					title: _('检测间隔（秒）'),
+					desc: _('推荐值：1、5、10、15、30、60、120、300，允许范围 1-3600。')
 				},
 				{
 					key: 'timeout', kind: 'int', min: 1, max: 30,
-					title: _('Probe timeout (seconds)'),
-					desc: _('Per-packet wait time before a probe is considered lost.')
+					title: _('探测超时（秒）'),
+					desc: _('单包等待时间，超过即视为探测丢失。')
 				},
 				{
 					key: 'count', kind: 'int', min: 1, max: 20,
-					title: _('Packets per probe'),
-					desc: _('ICMP only. Higher values give better loss statistics but cost more time. TCP always performs a single connect.')
+					title: _('每次探测包数'),
+					desc: _('仅 ICMP。数值越大丢包统计越准确，但耗时更长；TCP 始终只做一次连接。')
 				},
 				{
 					key: 'concurrency', kind: 'int', min: 1, max: 50,
-					title: _('Concurrent probes'),
-					desc: _('Maximum number of targets probed in parallel.')
+					title: _('并发探测数'),
+					desc: _('同时并行探测的最大目标数。')
 				},
 				{
 					key: 'address_family', kind: 'enum',
-					title: _('Address family'),
-					desc: _('Which protocol family the probes use. A target can override this.'),
-					values: [['auto', _('Auto')], ['ipv4', _('IPv4 only')], ['ipv6', _('IPv6 only')]]
+					title: _('地址族'),
+					desc: _('探测使用的协议族，单个目标可单独覆盖。'),
+					values: [['auto', _('自动')], ['ipv4', _('仅 IPv4')], ['ipv6', _('仅 IPv6')]]
 				},
 				{
 					key: 'interface', kind: 'text',
-					title: _('Outbound interface (optional)'),
-					desc: _('Example: wan, wwan. Leave empty to use the system default route.')
+					title: _('出口接口（可选）'),
+					desc: _('例如：wan、wwan，留空则使用系统默认路由。')
 				},
 				{
 					key: 'source', kind: 'text',
-					title: _('Source address (optional)'),
-					desc: _('Bind probes to a specific source IP address.')
+					title: _('源地址（可选）'),
+					desc: _('将探测绑定到指定的源 IP 地址。')
 				}
 			]
 		},
 		{
-			title: _('Data retention'),
-			desc: _('Where samples are kept and how long they survive.'),
-			icon: function() { return icons.database(46); },
+			title: _('数据保留'),
+			desc: _('样本的存储位置与保留时长。'),
+			icon: function() { return icons.database(44); },
 			fields: [
 				{
 					key: 'persistence', kind: 'flag',
-					title: _('Persistent history'),
-					desc: _('Write aggregated samples to flash periodically. Disabled by default to protect flash lifetime.')
+					title: _('持久化历史'),
+					desc: _('定期将聚合样本写入闪存，默认关闭以保护闪存寿命。')
 				},
 				{
 					key: 'history', kind: 'enum',
-					title: _('History retention'),
-					desc: _('How long aggregated samples are kept on flash when persistence is enabled.'),
-					values: [['1h', _('1 hour')], ['6h', _('6 hours')], ['12h', _('12 hours')],
-					         ['24h', _('24 hours')], ['3d', _('3 days')], ['7d', _('7 days')],
-					         ['30d', _('30 days')]]
+					title: _('历史保留时长'),
+					desc: _('启用持久化后，聚合样本在闪存上的保留时长。'),
+					values: [['1h', _('1 小时')], ['6h', _('6 小时')], ['12h', _('12 小时')],
+					         ['24h', _('24 小时')], ['3d', _('3 天')], ['7d', _('7 天')],
+					         ['30d', _('30 天')]]
 				},
 				{
 					key: 'persist_interval', kind: 'int', min: 60, max: 3600,
-					title: _('Flush interval (seconds)'),
-					desc: _('How often aggregated data is written to flash. Larger values mean fewer writes.')
+					title: _('写入间隔（秒）'),
+					desc: _('聚合数据写入闪存的频率，数值越大写入次数越少。')
 				},
 				{
 					key: 'max_points', kind: 'int', min: 60, max: 200000,
-					title: _('In-memory samples per target'),
-					desc: _('Ring buffer size in tmpfs. 4320 samples at a 10s interval covers about 12 hours.')
+					title: _('每个目标的内存样本数'),
+					desc: _('tmpfs 中的环形缓冲区大小；10 秒间隔下 4320 个样本约覆盖 12 小时。')
 				}
 			]
 		},
 		{
-			title: _('Thresholds'),
-			desc: _('Values used to turn raw measurements into a quality grade.'),
-			icon: function() { return icons.gear(46); },
+			title: _('阈值'),
+			desc: _('将原始测量值转换为质量等级的判定标准。'),
+			icon: function() { return icons.gear(44); },
 			fields: [
 				{
 					key: 'latency_excellent', kind: 'int', min: 1, max: 10000,
-					title: _('Excellent below (ms)'),
-					desc: _('Latency below this value is graded Excellent.')
+					title: _('优秀阈值（毫秒）'),
+					desc: _('延迟低于该值判定为优秀。')
 				},
 				{
 					key: 'latency_good', kind: 'int', min: 1, max: 10000,
-					title: _('Good below (ms)'),
-					desc: _('Latency below this value is graded Good.')
+					title: _('良好阈值（毫秒）'),
+					desc: _('延迟低于该值判定为良好。')
 				},
 				{
 					key: 'latency_fair', kind: 'int', min: 1, max: 10000,
-					title: _('Fair below (ms)'),
-					desc: _('Latency below this value is graded Fair.')
+					title: _('一般阈值（毫秒）'),
+					desc: _('延迟低于该值判定为一般。')
 				},
 				{
 					key: 'latency_poor', kind: 'int', min: 1, max: 10000,
-					title: _('Poor below (ms)'),
-					desc: _('Latency at or above this value is graded Severe.')
+					title: _('较差阈值（毫秒）'),
+					desc: _('延迟达到或超过该值判定为严重。')
 				},
 				{
 					key: 'loss_warn', kind: 'int', min: 0, max: 100,
-					title: _('Loss warning (%)'),
-					desc: _('Packet loss at or above this percentage is considered a warning.')
+					title: _('丢包告警（%）'),
+					desc: _('丢包率达到或超过该百分比视为告警。')
 				},
 				{
 					key: 'loss_critical', kind: 'int', min: 0, max: 100,
-					title: _('Loss critical (%)'),
-					desc: _('Packet loss at or above this percentage is considered critical.')
+					title: _('丢包严重（%）'),
+					desc: _('丢包率达到或超过该百分比视为严重。')
 				},
 				{
 					key: 'fail_warn', kind: 'int', min: 1, max: 100,
-					title: _('Consecutive failures to warn'),
-					desc: _('After this many consecutive failures the target is graded Severe.')
+					title: _('连续失败告警次数'),
+					desc: _('连续失败达到该次数后判定为严重。')
 				},
 				{
 					key: 'fail_critical', kind: 'int', min: 1, max: 1000,
-					title: _('Consecutive failures to critical'),
-					desc: _('After this many consecutive failures the target is graded Offline.')
+					title: _('连续失败严重次数'),
+					desc: _('连续失败达到该次数后判定为离线。')
 				}
 			]
 		},
 		{
-			title: _('Interface & logging'),
-			desc: _('Front-end refresh rate and log verbosity.'),
-			icon: function() { return icons.clock(null, 46); },
+			title: _('界面与日志'),
+			desc: _('前端刷新频率与日志详细程度。'),
+			icon: function() { return icons.clock(null, 44); },
 			fields: [
 				{
 					key: 'ui_refresh', kind: 'int', min: 1, max: 60,
-					title: _('UI refresh interval (seconds)'),
-					desc: _('How often the page fetches new state. Independent from the probe interval.')
+					title: _('界面刷新间隔（秒）'),
+					desc: _('页面获取新状态的频率，与探测间隔相互独立。')
 				},
 				{
 					key: 'log_level', kind: 'enum',
-					title: _('Log level'),
-					desc: _('Normal probes are never logged. Only state changes and failures produce log entries.'),
-					values: [['debug', _('Debug')], ['info', _('Info')],
-					         ['warning', _('Warning')], ['error', _('Error')]]
+					title: _('日志级别'),
+					desc: _('正常探测不产生日志，仅状态变化与失败会记录。'),
+					values: [['debug', _('调试')], ['info', _('信息')],
+					         ['warning', _('警告')], ['error', _('错误')]]
 				}
 			]
 		},
 		{
-			title: _('Notification (reserved)'),
-			desc: _('The notification backend is not implemented yet.'),
-			icon: function() { return icons.bell(0, 46); },
+			title: _('通知（预留）'),
+			desc: _('通知后端尚未实现。'),
+			icon: function() { return icons.bell(0, 44); },
 			fields: [
 				{
 					key: 'notify_enabled', kind: 'flag',
-					title: _('Enable notification'),
-					desc: _('Reserved for future webhook / Telegram / WeCom / DingTalk / mail support. Has no effect yet.')
+					title: _('启用通知'),
+					desc: _('为将来的 webhook / Telegram / 企业微信 / 钉钉 / 邮件支持预留，暂不生效。')
 				},
 				{
 					key: 'notify_url', kind: 'text',
-					title: _('Notification endpoint'),
-					desc: _('Reserved. Leave empty until a notification backend is available.')
+					title: _('通知地址'),
+					desc: _('预留，在通知后端可用前留空。')
 				}
 			]
 		}
@@ -243,6 +196,7 @@ return view.extend({
 		common.css();
 		return Promise.all([
 			common.loadI18n(),
+			common.tdesign(),
 			common.api.getConfig(),
 			common.api.serviceStatus().catch(function() {
 				return { running: false, tick: 0 };
@@ -253,66 +207,83 @@ return view.extend({
 	render: function(res) {
 		common.css();
 
-		var cfg = (res && res[1]) || {};
-		var svc = (res && res[2]) || {};
+		var cfg = (res && res[2]) || {};
+		var svc = (res && res[3]) || {};
 
 		var root = common.el('div', 'nm-root');
 		var page = common.el('div', 'nm-page');
 		root.appendChild(page);
 
-		/* 每个字段的控件与元信息：key -> { kind, el, min, max } */
 		var controls = {};
-		/* 载入基线：与 collect() 的输出可直接字符串比较，用于判断「有无改动」 */
 		var baseline = {};
 		var btnSave = null, btnDiscard = null, dirtyTag = null;
+
+		function setDisabled(el, on) {
+			if (on) el.setAttribute('disabled', '');
+			else el.removeAttribute('disabled');
+		}
 
 		if (!Object.prototype.hasOwnProperty.call(cfg, 'default_proto'))
 			cfg.default_proto = 'icmp';
 		if (!Object.prototype.hasOwnProperty.call(cfg, 'default_tcp_port'))
 			cfg.default_tcp_port = '80';
 
-		/* ---------------------------------------------------- 服务控制 */
-		var svcCard = common.el('div', 'nm-card');
-		var svcRow = common.el('div', 'nm-row');
-		var svcIcon = common.el('div', '');
-		svcRow.appendChild(svcIcon);
-		var svcText = common.el('div', 'nm-card-sub', '');
-		svcRow.appendChild(svcText);
-		svcRow.appendChild(common.el('div', 'nm-spacer'));
+		/* ---------------------------------------------------- 服务控制面板（TDesign 视觉卡） */
+		var svcCard = common.tcard('nm-svc-panel');
+		var svcRow = common.el('div', 'nm-svc-row-top');
 
-		function svcBtn(label, fn, cls) {
-			var b = common.el('button', 'nm-btn ' + (cls || ''), label);
+		var svcIcon = common.el('div', 'nm-svc-info');
+		svcRow.appendChild(svcIcon);
+		var svcText = common.el('div', 'nm-svc-text', '');
+		svcRow.appendChild(svcText);
+
+		var spacerSvc = common.el('div', 'nm-spacer');
+		spacerSvc.style.flex = '1';
+		svcRow.appendChild(spacerSvc);
+
+		function svcBtn(label, fn, isPrimary) {
+			var b = document.createElement('t-button');
+			b.setAttribute('theme', isPrimary ? 'primary' : 'default');
+			if (!isPrimary) b.setAttribute('variant', 'outline');
+			b.textContent = label;
 			b.addEventListener('click', function() {
-				b.disabled = true;
+				setDisabled(b, true);
 				Promise.resolve().then(fn).then(function() {
-					common.notify(_('Operation completed'));
+					common.notify(_('操作已完成'));
 					refreshSvc();
 				}).catch(function(e) {
 					common.notify(String(e.message || e), 'error');
-				}).then(function() { b.disabled = false; });
+				}).then(function() { setDisabled(b, false); });
 			});
 			return b;
 		}
 
-		svcRow.appendChild(svcBtn(_('Start'), common.api.startService, 'nm-btn-primary'));
-		svcRow.appendChild(svcBtn(_('Stop'), common.api.stopService));
-		svcRow.appendChild(svcBtn(_('Restart'), common.api.restartService));
+		svcRow.appendChild(svcBtn(_('启动'), common.api.startService, true));
+		svcRow.appendChild(svcBtn(_('停止'), common.api.stopService, false));
+		svcRow.appendChild(svcBtn(_('重启'), common.api.restartService, false));
 		svcCard.appendChild(svcRow);
 
-		var clearRow = common.el('div', 'nm-row');
-		clearRow.style.marginTop = '12px';
-		clearRow.appendChild(common.el('div', 'nm-card-sub',
-			_('Clear all collected samples and persistent history')));
-		clearRow.appendChild(common.el('div', 'nm-spacer'));
-		var btnClear = common.el('button', 'nm-btn nm-btn-danger', _('Clear history'));
+		var clearRow = common.el('div', 'nm-svc-clear-row');
+		var clearDesc = common.el('div', 'nm-card-description');
+		clearDesc.textContent = _('清空所有已采集样本与持久化历史');
+		clearRow.appendChild(clearDesc);
+
+		var spacerClear = common.el('div', 'nm-spacer');
+		spacerClear.style.flex = '1';
+		clearRow.appendChild(spacerClear);
+
+		var btnClear = document.createElement('t-button');
+		btnClear.setAttribute('theme', 'danger');
+		btnClear.setAttribute('variant', 'outline');
+		btnClear.textContent = _('清空历史');
 		btnClear.addEventListener('click', function() {
-			if (!window.confirm(_('Clear all collected history data?'))) return;
-			btnClear.disabled = true;
+			if (!window.confirm(_('确定清空所有历史数据？'))) return;
+			setDisabled(btnClear, true);
 			common.api.clearHistory(null).then(function() {
-				common.notify(_('History cleared'));
+				common.notify(_('历史已清空'));
 			}).catch(function(e) {
 				common.notify(String(e.message || e), 'error');
-			}).then(function() { btnClear.disabled = false; });
+			}).then(function() { setDisabled(btnClear, false); });
 		});
 		clearRow.appendChild(btnClear);
 		svcCard.appendChild(clearRow);
@@ -322,20 +293,41 @@ return view.extend({
 			return common.api.serviceStatus().then(function(d) {
 				common.clear(svcIcon);
 				svcIcon.appendChild(common.svgBox(icons.service(!!d.running, 30), ''));
-				svcText.textContent = (d.running ? _('Service running') : _('Service stopped')) +
-					' · ' + _('Last update') + ': ' + (d.tick ? common.fmt.ago(d.tick) : _('Never checked'));
+				svcText.textContent = (d.running ? _('服务运行中') : _('服务已停止')) +
+					' · ' + _('最后更新') + ': ' + (d.tick ? common.fmt.ago(d.tick) : _('从未检测'));
 			}).catch(function() {
 				common.clear(svcIcon);
 				svcIcon.appendChild(common.svgBox(icons.service(false, 30), ''));
-				svcText.textContent = _('Service stopped');
+				svcText.textContent = _('服务已停止');
 			});
 		}
 
-		/* ---------------------------------------------------- 生效值速览 */
-		var strip = common.el('div', 'nm-grid');
+		/* ---------------------------------------------------- 生效值速览条 */
+		var strip = common.el('div', 'nm-strip-grid');
 		page.appendChild(strip);
 
-		/* 速览卡片的数值一律来自设备回读的配置对象，图标与数值一一对应。 */
+		function makeStripCard(title, val, subText, svgIcon, valCls) {
+			var card = common.tcard();
+			var inner = common.el('div', 'nm-card-inner');
+
+			var head = common.el('div', 'nm-card-header');
+			head.appendChild(common.el('span', 'nm-card-label', title));
+
+			if (svgIcon) {
+				var icoBox = common.el('div', 'nm-card-icon-box');
+				if (typeof svgIcon === 'string') icoBox.innerHTML = svgIcon;
+				else icoBox.appendChild(svgIcon);
+				head.appendChild(icoBox);
+			}
+
+			inner.appendChild(head);
+			inner.appendChild(common.el('div', 'nm-card-number ' + (valCls || ''), val));
+			if (subText) inner.appendChild(common.el('div', 'nm-card-description', subText));
+
+			card.appendChild(inner);
+			return card;
+		}
+
 		function renderStrip(v) {
 			common.clear(strip);
 
@@ -352,112 +344,126 @@ return view.extend({
 			var port = String(v.default_tcp_port == null ? '80' : v.default_tcp_port);
 			var v6 = (fam === 'ipv6');
 
-			/* 探测方式卡片：图标语义随 ICMP / TCP 切换 */
-			strip.appendChild(common.iconCard(_('Default probe method'),
-				(proto === 'tcp') ? _('TCP connect') : _('ICMP (ping)'),
-				(proto === 'tcp') ? _('Handshake timing to port') + ': ' + port
-				                  : _('Echo request / reply'),
-				icons.ping(58, { grade: 'good' }), 'nm-c-ok'));
+			strip.appendChild(makeStripCard(
+				_('默认探测方式'),
+				(proto === 'tcp') ? _('TCP 连接') : _('ICMP（ping）'),
+				(proto === 'tcp') ? _('到端口的手握耗时') + ': ' + port : _('回显请求 / 应答'),
+				icons.ping(44, { grade: 'good' }),
+				'nm-c-ok'
+			));
 
-			strip.appendChild(common.iconCard(_('Check interval'), interval + ' s',
-				_('Packets per probe') + ': ' + count,
-				icons.ping(58, { grade: 'good' }), 'nm-c-ok'));
+			strip.appendChild(makeStripCard(
+				_('检测间隔'),
+				interval + ' s',
+				_('每次探测包数') + ': ' + count,
+				icons.ping(44, { grade: 'good' }),
+				'nm-c-ok'
+			));
 
-			strip.appendChild(common.iconCard(_('Probe timeout'), timeout + ' s',
-				_('Concurrent probes') + ': ' + conc, icons.gear(58)));
+			strip.appendChild(makeStripCard(
+				_('探测超时'),
+				timeout + ' s',
+				_('并发探测数') + ': ' + conc,
+				icons.gear(44)
+			));
 
-			strip.appendChild(common.iconCard(_('Persistent history'),
-				(persist === '1') ? _('Enabled') : _('Disabled'),
-				_('Retention') + ': ' + hist, icons.database(58),
-				(persist === '1') ? 'nm-c-warn' : 'nm-c-ok'));
+			strip.appendChild(makeStripCard(
+				_('持久化历史'),
+				(persist === '1') ? _('已启用') : _('已停用'),
+				_('保留期') + ': ' + hist,
+				icons.database(44),
+				(persist === '1') ? 'nm-c-warn' : 'nm-c-ok'
+			));
 
-			strip.appendChild(common.iconCard(_('Address family'), fam,
-				_('Master switch') + ': ' + ((enabled === '1') ? _('Enabled') : _('Disabled')),
-				icons.dualStack(fam, fam !== 'ipv6', v6, 58)));
+			strip.appendChild(makeStripCard(
+				_('地址族'),
+				fam,
+				_('总开关') + ': ' + ((enabled === '1') ? _('已启用') : _('已停用')),
+				icons.dualStack(fam, fam !== 'ipv6', v6, 44)
+			));
 
-			strip.appendChild(common.iconCard(_('Enable notification'),
-				(notify === '1') ? _('Enabled') : _('Disabled'),
-				_('Reserved') + ' · ' + _('Thresholds'), icons.bell(0, 58)));
+			strip.appendChild(makeStripCard(
+				_('启用通知'),
+				(notify === '1') ? _('已启用') : _('已停用'),
+				_('预留') + ' · ' + _('阈值'),
+				icons.bell(0, 44)
+			));
 
-			strip.appendChild(common.iconCard(_('UI refresh interval'),
+			strip.appendChild(makeStripCard(
+				_('UI refresh interval'),
 				String(v.ui_refresh == null ? '2' : v.ui_refresh) + ' s',
-				_('Independent from the probe interval'), icons.clock(null, 58)));
+				_('Independent from the probe interval'),
+				icons.clock(null, 44)
+			));
 		}
 
-		/* ---------------------------------------------------- 表单控件 */
+		/* ---------------------------------------------------- 表单控件工厂（TDesign） */
 		function switchControl(key, value) {
-			var lab = common.el('label', 'nm-switch');
-			var inp = common.el('input', '');
-			inp.type = 'checkbox';
-			inp.checked = (value === '1' || value === 1 || value === true);
-			lab.appendChild(inp);
-			lab.appendChild(common.el('i', ''));
-			var txt = common.el('span', '', inp.checked ? _('Enabled') : _('Disabled'));
-			lab.appendChild(txt);
-			inp.addEventListener('change', function() {
-				txt.textContent = inp.checked ? _('Enabled') : _('Disabled');
+			var sw = document.createElement('t-switch');
+			sw.value = (value === '1' || value === 1 || value === true);
+			sw.addEventListener('change', function(e) {
+				sw.value = !!(e.detail && e.detail.value);
 				markDirty();
 			});
-			return { kind: 'flag', el: inp };
+			return { kind: 'flag', el: sw };
 		}
 
 		function intControl(key, value, min, max) {
-			var inp = common.el('input', 'nm-input nm-num-input');
-			inp.type = 'number';
-			inp.step = '1';
-			inp.min = String(min);
-			inp.max = String(max);
-			inp.value = (value == null ? '' : String(value));
-			inp.addEventListener('input', markDirty);
-			inp.addEventListener('change', markDirty);
-			return { kind: 'int', el: inp, min: min, max: max };
+			var n = document.createElement('t-input-number');
+			n.className = 'nm-num-input';
+			n.min = min;
+			n.max = max;
+			n.value = (value == null || value === '') ? null : Number(value);
+			n.addEventListener('input', markDirty);
+			n.addEventListener('change', markDirty);
+			return { kind: 'int', el: n, min: min, max: max };
 		}
 
 		function enumControl(key, value, values) {
-			var sel = common.el('select', 'nm-select');
-			values.forEach(function(o) {
-				var op = common.el('option', '', o[1]);
-				op.value = o[0];
-				sel.appendChild(op);
+			var sel = document.createElement('t-select');
+			var options = values.map(function(o) {
+				return { label: o[1], value: o[0] };
 			});
-			sel.value = (value == null ? '' : String(value));
-			/* 值不在候选项里时（例如手工改过配置文件），补一个当前值，
-			 * 避免下拉框静默回落到第一项后又被保存回去。 */
-			if (sel.selectedIndex < 0) {
-				var op2 = common.el('option', '', String(value) + ' ' + _('(current)'));
-				op2.value = String(value);
-				sel.appendChild(op2);
-				sel.value = String(value);
+			/* 当前值不在选项列表时（例如旧配置），补一个「当前值」兜底选项 */
+			var cur = (value == null ? '' : String(value));
+			var found = false;
+			for (var i = 0; i < options.length; i++) {
+				if (String(options[i].value) === cur) { found = true; break; }
 			}
+			if (!found && cur !== '')
+				options.push({ label: cur + ' ' + _('（当前）'), value: cur });
+			sel.options = options;
+			sel.value = cur;
 			sel.addEventListener('change', markDirty);
 			return { kind: 'enum', el: sel };
 		}
 
 		function textControl(key, value) {
-			var inp = common.el('input', 'nm-input');
-			inp.type = 'text';
-			inp.value = (value == null ? '' : String(value));
-			inp.addEventListener('input', markDirty);
-			inp.addEventListener('change', markDirty);
-			return { kind: 'text', el: inp };
+			var i = document.createElement('t-input');
+			i.value = (value == null ? '' : String(value));
+			i.addEventListener('input', markDirty);
+			i.addEventListener('change', markDirty);
+			return { kind: 'text', el: i };
 		}
 
 		/* ---------------------------------------------------- 表单渲染 */
 		var groups = fieldGroups();
 
 		groups.forEach(function(g) {
-			var card = common.el('div', 'nm-card');
-			var head = common.el('div', 'nm-group-head');
-			var ibox = common.el('span', 'nm-group-icon');
+			var card = common.tcard('nm-group-card');
+
+			var head = common.el('div', 'nm-group-header');
+			var ibox = common.el('span', 'nm-group-icon-wrap');
 			ibox.innerHTML = g.icon();
 			head.appendChild(ibox);
+
 			var htxt = common.el('div', '');
-			htxt.appendChild(common.el('div', 'nm-card-title', g.title));
+			htxt.appendChild(common.el('div', 'nm-group-title', g.title));
 			if (g.desc)
-				htxt.appendChild(common.el('div', 'nm-card-sub', g.desc));
+				htxt.appendChild(common.el('div', 'nm-group-desc', g.desc));
 			head.appendChild(htxt);
 			card.appendChild(head);
-			card.appendChild(common.el('div', 'nm-group-sep'));
+			card.appendChild(common.el('div', 'nm-group-divider'));
 
 			g.fields.forEach(function(f) {
 				var row = common.el('div', 'nm-setting');
@@ -491,7 +497,7 @@ return view.extend({
 		/* ---------------------------------------------------- 采集与保存 */
 		function valueOf(k) {
 			var c = controls[k];
-			if (c.kind === 'flag') return c.el.checked ? '1' : '0';
+			if (c.kind === 'flag') return c.el.value ? '1' : '0';
 			return String(c.el.value == null ? '' : c.el.value).trim();
 		}
 
@@ -501,7 +507,6 @@ return view.extend({
 			return o;
 		}
 
-		/* 载入基线：以设备返回的值为准（后端会补默认值，前端不做二次猜测） */
 		function takeBaseline(v) {
 			var o = {};
 			for (var k in controls) {
@@ -511,8 +516,6 @@ return view.extend({
 			return o;
 		}
 
-		/* 保存前的本地校验：只为给出即时反馈，最终取值范围仍由设备侧决定。
-		 * 返回错误文案，或 null 表示通过。 */
 		function validate(v) {
 			for (var k in controls) {
 				var c = controls[k];
@@ -520,12 +523,12 @@ return view.extend({
 				var s = v[k];
 				if (s === '' || !/^[0-9]+$/.test(s)) {
 					var t = c.el.getAttribute('data-title') || k;
-					return t + ': ' + _('Please enter a whole number');
+					return t + ': ' + _('请输入整数');
 				}
 				var n = parseInt(s, 10);
 				if (n < c.min || n > c.max) {
 					var t2 = c.el.getAttribute('data-title') || k;
-					return t2 + ': ' + _('Allowed range') + ' ' + c.min + '-' + c.max;
+					return t2 + ': ' + _('允许范围') + ' ' + c.min + '-' + c.max;
 				}
 			}
 			return null;
@@ -539,67 +542,87 @@ return view.extend({
 
 		function markDirty() {
 			var isDirty = !sameAsBaseline(collect());
-			if (btnSave) btnSave.disabled = !isDirty;
-			if (btnDiscard) btnDiscard.disabled = !isDirty;
-			if (dirtyTag) {
-				dirtyTag.textContent = isDirty ? _('Unsaved changes') : _('All changes applied');
-				dirtyTag.className = 'nm-card-sub' + (isDirty ? ' nm-dirty' : '');
-			}
+			setPill(isDirty ? 'dirty' : 'clean');
+			setDisabled(btnSave, !isDirty);
+			setDisabled(btnDiscard, !isDirty);
 		}
 
-		var actCard = common.el('div', 'nm-card');
-		var actRow = common.el('div', 'nm-row');
-		btnSave = common.el('button', 'nm-btn nm-btn-primary', _('Save & Apply'));
-		btnDiscard = common.el('button', 'nm-btn', _('Discard changes'));
-		dirtyTag = common.el('div', 'nm-card-sub');
+		/* 状态胶囊：clean（无改动）/ dirty（有未保存的修改）/ staged（已暂存待应用） */
+		function setPill(mode) {
+			if (!dirtyTag) return;
+			dirtyTag.className = 'nm-dirty-pill ' + mode;
+			if (mode === 'dirty')
+				dirtyTag.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6" fill="#f59e0b"/></svg><span>${_('有未保存的修改')}</span>`;
+			else if (mode === 'staged')
+				dirtyTag.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6" fill="#3b82f6"/></svg><span>${_('已暂存，待应用')}</span>`;
+			else
+				dirtyTag.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M13.485 1.929a1 1 0 0 1 1.414 1.414L6.343 11.899 1.1 6.657a1 1 0 0 1 1.414-1.414l3.829 3.829 7.142-7.143z" fill="#10b981"/></svg><span>${_('所有修改已生效')}</span>`;
+		}
 
+		/* 动作栏（TDesign 视觉卡）：保存 / 放弃 / 状态胶囊 */
+		var actCard = common.tcard('nm-action-bar-glass');
+
+		btnSave = document.createElement('t-button');
+		btnSave.setAttribute('theme', 'primary');
+		btnSave.textContent = _('保存更改');
+
+		btnDiscard = document.createElement('t-button');
+		btnDiscard.setAttribute('theme', 'default');
+		btnDiscard.setAttribute('variant', 'outline');
+		btnDiscard.textContent = _('放弃修改');
+
+		dirtyTag = common.el('div', 'nm-dirty-pill clean');
+
+		/* 保存只做「暂存」：把改动经标准 UCI API（uci.set/unset + uci.save）写入
+		 * 会话的待应用更改，提交（落盘 + reload）交给 OpenWrt 原生「保存并应用」栏。
+		 * 刻意不再在这里调 ui.changes.apply() —— 那会让本页自带的按钮和原生栏
+		 * 出现两套应用入口，互相冲突。 */
 		btnSave.addEventListener('click', function() {
 			var v = collect();
 			var bad = validate(v);
 			if (bad) { common.notify(bad, 'error'); return; }
-			btnSave.disabled = true;
+			setDisabled(btnSave, true);
 
-			/* 保存与应用都复用 OpenWRT 自带的机制，与 targets 编辑弹窗一致：
-			 *   写入 common.saveConfig → 原生 uci 事务，推入 rpcd 会话的待应用更改
-			 *   应用 common.applyChanges → LuCI「保存并应用」按钮背后的
-			 *        ui.changes.apply(true)（POST admin/uci/apply_rollback）
-			 * 插件不再自己调用 uci.apply()，全插件只剩这一条提交通道；
-			 * 应用期间的状态提示、连接性变更确认、失联自动回滚、成功后重载页面
-			 * 都由 LuCI 负责，不再自建。 */
 			var ops = [];
 			for (var k in v)
 				ops.push({ sid: 'global', opt: k, val: v[k] });
 
 			common.saveConfig(ops).then(function(changed) {
-				/* 无改动时不能调用 applyChanges()：没有待提交改动时 rpcd
-				 * 的 uci.apply 会直接报错（实测 ubus code 5）。 */
 				if (changed === 0) {
-					common.notify(_('No changes to save'));
+					markDirty();
+					common.notify(_('没有需要保存的修改'));
 					return;
 				}
-				return common.applyChanges();
+				baseline = takeBaseline(v);
+				setDisabled(btnSave, true);
+				setDisabled(btnDiscard, false);
+				renderStrip(v);
+				setPill('staged');
+				common.notify(_('更改已暂存，请点击页面底部的「保存并应用」使其生效'));
 			}).catch(function(e) {
+				setDisabled(btnSave, false);
 				common.notify(String(e.message || e), 'error');
-			}).then(function() {
-				btnSave.disabled = false;
-				markDirty();
 			});
 		});
 
 		btnDiscard.addEventListener('click', function() {
 			applyConfig(cfg);
-			common.notify(_('Changes discarded'));
+			/* 同步撤回本页暂存的会话改动，避免「表单已还原、底部原生栏仍显示待应用」 */
+			return common.revertConfig('netmonitor').catch(function() {
+				/* 撤回失败不阻断表单复位 */
+			}).then(function() {
+				common.notify(_('修改已放弃'));
+			});
 		});
 
-		actRow.appendChild(btnSave);
-		actRow.appendChild(btnDiscard);
-		actRow.appendChild(common.el('div', 'nm-spacer'));
-		actRow.appendChild(dirtyTag);
-		actCard.appendChild(actRow);
+		actCard.appendChild(btnSave);
+		actCard.appendChild(btnDiscard);
+		var spacerAct = common.el('div', 'nm-spacer');
+		spacerAct.style.flex = '1';
+		actCard.appendChild(spacerAct);
+		actCard.appendChild(dirtyTag);
 		page.appendChild(actCard);
 
-		/* 用一份配置对象刷新整个页面：输入框、速览卡片与基线同步更新。
-		 * 保存后走一次，保证界面显示的就是设备里实际生效的值。 */
 		function applyConfig(v) {
 			cfg = v;
 			for (var k in controls) {
@@ -607,11 +630,10 @@ return view.extend({
 				var raw = v[k];
 				var s = (raw == null) ? '' : String(raw);
 				if (c.kind === 'flag') {
-					c.el.checked = (s === '1');
-					var txt = c.el.parentNode.querySelector('span');
-					if (txt) txt.textContent = c.el.checked ? _('Enabled') : _('Disabled');
-				}
-				else if (c.el.value !== s) {
+					c.el.value = (s === '1');
+				} else if (c.kind === 'int') {
+					c.el.value = (s === '') ? null : Number(s);
+				} else if (c.el.value !== s) {
 					c.el.value = s;
 				}
 			}
@@ -620,7 +642,6 @@ return view.extend({
 			markDirty();
 		}
 
-		/* 给整型输入挂上标题，便于本地校验提示带上字段名 */
 		groups.forEach(function(g) {
 			g.fields.forEach(function(f) {
 				if (f.kind === 'int')
