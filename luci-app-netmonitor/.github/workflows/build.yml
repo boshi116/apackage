@@ -281,6 +281,183 @@ jobs:
             echo "==> i18n artifact present: $found"
           done
 
+      - name: Verify payload integrity against source
+        shell: sh
+        run: |
+          set -eu
+          # SDK 容器（Alpine/Debian 基座）默认不带 node，而本护栏的 JS 语法校验依赖
+          # node --check。缺 node 时命令以 127 退出，护栏会把「找不到 node」
+          # 误判成「JS 被破坏」报 INVALID JAVASCRIPT——1.4.1 的 CI 实测：
+          # chart.js 与源码逐字节一致、本地 node --check 通过，仍被误报。
+          #
+          # 不能用系统包管理器补装 node：openwrt/sdk 的 Debian 11 (bullseye) 基座
+          # 2026-08 已 EOL，deb.debian.org 撤下全部 bullseye 包，apt-get install
+          # nodejs 报 404（1.4.1 CI 实测 exit 100）；且就算源没死，装上的也是
+          # node 12——太老，node --check 认不得本项目前端用的现代 JS 语法，
+          # 仍会误报。这里直接从 nodejs.org 下载官方静态二进制，与系统包源解耦。
+          if ! command -v node >/dev/null 2>&1; then
+            NODE_VERSION=v22.17.0
+            NODE_DL_ARCH=$(uname -m)
+            case "$NODE_DL_ARCH" in
+              x86_64)  NODE_DL_ARCH=x64 ;;
+              aarch64) NODE_DL_ARCH=arm64 ;;
+              *)
+                echo "::error::unsupported arch for node download: $NODE_DL_ARCH"
+                exit 1
+                ;;
+            esac
+            # Alpine(musl) 基座需用 musl 构建的 node；glibc 构建的在 Alpine 上跑不起来
+            if [ -f /etc/alpine-release ]; then
+              NODE_DL_ARCH="${NODE_DL_ARCH}-musl"
+            fi
+            NODE_TGZ="node-${NODE_VERSION}-linux-${NODE_DL_ARCH}.tar.gz"
+            NODE_URL="https://nodejs.org/dist/${NODE_VERSION}/${NODE_TGZ}"
+            NODE_TMP=$(mktemp -d)
+            echo "==> fetching $NODE_URL"
+            if command -v curl >/dev/null 2>&1; then
+              curl -fsSL "$NODE_URL" -o "$NODE_TMP/$NODE_TGZ"
+            elif command -v wget >/dev/null 2>&1; then
+              wget -q -O "$NODE_TMP/$NODE_TGZ" "$NODE_URL"
+            else
+              echo "::error::neither curl nor wget available to fetch node"
+              exit 1
+            fi
+            tar -xzf "$NODE_TMP/$NODE_TGZ" -C "$NODE_TMP"
+            # 只需 node 本体进 PATH（node --check 不依赖 npm 的 node_modules）
+            cp -a "$NODE_TMP"/node-*/bin/node /usr/local/bin/
+            rm -rf "$NODE_TMP"
+          fi
+          node --version
+          cd "$SDK_DIR"
+
+          # 1.4.0 踩过的坑（务必保留这道护栏）：产物能编出来、CI 全绿、页面框架
+          # 与响应式布局都正常，但随包分发的 7 MB tdesign.min.js 被 jsmin 压坏，
+          # 浏览器抛 SyntaxError、window.TDesign 未定义——而 DOM 里 t-button/t-tag
+          # 标签照样存在，只是没有样式与行为，肉眼与页面截图都很难第一时间发现。
+          #
+          # 根因：luci.mk 的 LUCI_MINIFY_JS / LUCI_MINIFY_CSS 默认 ?=1，会对每个
+          # .js/.css 跑 jsmin / csstidy。该工具处理第三方 UMD bundle（28 行、含
+          # /*! */ 许可证注释）时把文件压成 3 行、删掉 691636 字节，删除点落在
+          # 语句中间，直接破坏语法。已在 Makefile 里 LUCI_MINIFY_JS:=0 /
+          # LUCI_MINIFY_CSS:=0 关掉，此步负责证明「关掉之后产物不再被破坏」。
+
+          # 校验对象：build_dir 下本包的 .pkgdir/<pkg>/ —— 即 OpenWrt 打包前
+          # 把文件铺开的目标目录，内容与包内一致，且**不需要任何解包工具**。
+          #
+          # 前三版都栽在「怎么把包解开」或「目录叫什么」上（务必读完再改）：
+          #   v1 `ar x` 解 ipk      -> ar 认不得 opkg 的 ipk 格式（exit 1）
+          #   v2 `apk extract` 解 apk -> SDK 是 buildroot，不带 apk-tools（exit 127）
+          #   v3 找 ipkg-install    -> 目录名不是 ipkg-install 而是 ipkg-<arch> /
+          #        apk-<arch>，且本包是 LUCI_PKGARCH:=all 的架构无关包，
+          #        根本不生成那两个目录（ls -d 回显为空，exit 1）
+          # 实测本包真实路径是
+          #   build_dir/target-<triple>/<pkg>/.pkgdir/<pkg>/
+          # 该目录在 ipk(24.10) 与 apk(25.12) 两种 SDK 下都存在，故统一用它。
+          # triple（x86_64_musl / aarch64_cortex-a53）随 SDK 变，用通配探测。
+
+          SRC="$GITHUB_WORKSPACE/$NM_PKG"
+
+          ROOT=""
+          for d in "$SDK_DIR"/build_dir/target-*/"$NM_PKG"/.pkgdir/"$NM_PKG"; do
+            [ -d "$d" ] && ROOT="$d" && break
+          done
+          if [ -z "$ROOT" ]; then
+            echo "::error::cannot locate .pkgdir for $NM_PKG under $SDK_DIR/build_dir"
+            ls -d "$SDK_DIR"/build_dir/target-*/"$NM_PKG"/.pkgdir/* 2>/dev/null | head -20 || true
+            ls -d "$SDK_DIR"/build_dir/target-*/"$NM_PKG"/ 2>/dev/null | head -20 || true
+            exit 1
+          fi
+          echo "==> payload root: ${ROOT#$SDK_DIR/}"
+
+          # 判定方式按文件类型分档，**不用体积比例**。
+          #
+          # luci.mk 合法地重写 htdocs 下的 .js/.css（剥头部注释、压行、改写
+          # view/ 的头部），体积天然小很多。实测同一批文件里：
+          #   common.js         25560 -> 15806  (61.9%，完全正常)
+          #   tdesign.min.js  7385397 -> 6693761 (90.6%，语法已坏)
+          # 剥注释后 tdesign 理论值 91.3%，与损坏后的 90.6% 几乎重合 —— 任何
+          # 固定百分比阈值都会在「正常压缩」与「真实损坏」之间二选一：要么误报
+          # 让 CI 永远红，要么漏报让坏产物发出去。
+          #
+          # 唯一能区分两者的判据是**语法**：正常压缩的产物仍能解析，被切断
+          # 语句的不能。
+          #   .js                -> node --check 必须通过
+          #   .json/.sh/无扩展名 -> 逐字节 sha256（实测 root/ 下 7/7 完全一致）
+          #   .css               -> 存在、非空、含规则块（csstidy 无语法可查）
+          #
+          # 路径映射：htdocs/x -> $ROOT/www/x，root/x -> $ROOT/x。
+          # 早先版本把两者都当 /www/ 处理，导致每次构建都在 root/ 首个文件上
+          # 报 MISSING，护栏恒红、形同虚设。护栏自身必须先被验证是对的。
+
+          jsn=0
+          strict=0
+
+          # ---- 1) JavaScript：语法必须合法 ----
+          for src in $(find "$SRC/htdocs" "$SRC/root" -type f -name '*.js' 2>/dev/null | sort); do
+            rel="${src#"$SRC/"}"
+            case "$rel" in
+              htdocs/*) want="$ROOT/www/${rel#htdocs/}" ;;
+              root/*)   want="$ROOT/${rel#root/}" ;;
+              *) continue ;;
+            esac
+            if [ ! -f "$want" ]; then
+              echo "::error::MISSING in payload: ${want#$ROOT/} (source: $rel)"
+              exit 1
+            fi
+            if ! node --check "$want" >/dev/null 2>&1; then
+              echo "::error::INVALID JAVASCRIPT in payload: ${want#$ROOT/}"
+              echo "::error::  node --check 失败 —— 该文件在打包中被破坏。"
+              echo "::error::  1.4.0 的 tdesign.min.js 即是此症状（jsmin 切断语句）。"
+              echo "::error::  检查 Makefile 里 LUCI_MINIFY_JS 是否仍为 1。"
+              node --check "$want" 2>&1 | head -5 || true
+              exit 1
+            fi
+            jsn=$((jsn + 1))
+          done
+          echo "==> JS syntax OK ($jsn files)"
+
+          # ---- 2) CSS / JSON / shell / 无扩展名 ----
+          for src in $(find "$SRC/htdocs" "$SRC/root" -type f 2>/dev/null | sort); do
+            rel="${src#"$SRC/"}"
+            case "$rel" in
+              htdocs/*) want="$ROOT/www/${rel#htdocs/}" ;;
+              root/*)   want="$ROOT/${rel#root/}" ;;
+              *) continue ;;
+            esac
+            case "$want" in
+              *.js|*.ipk|*.apk|*.gz) continue ;;
+            esac
+            if [ ! -f "$want" ]; then
+              echo "::error::MISSING in payload: ${want#$ROOT/} (source: $rel)"
+              exit 1
+            fi
+            if [ ! -s "$want" ]; then
+              echo "::error::EMPTY in payload: ${want#$ROOT/}"
+              exit 1
+            fi
+            case "$want" in
+              *.css)
+                if ! grep -q '{' "$want"; then
+                  echo "::error::CSS LOOKS BROKEN in payload: ${want#$ROOT/} (no rule block)"
+                  exit 1
+                fi
+                ;;
+              *)
+                a=$(sha256sum "$src" | cut -d' ' -f1)
+                b=$(sha256sum "$want" | cut -d' ' -f1)
+                if [ "$a" != "$b" ]; then
+                  echo "::error::CONTENT MISMATCH: ${want#$ROOT/}"
+                  echo "::error::  source  : $a ($(wc -c < "$src") bytes)"
+                  echo "::error::  payload : $b ($(wc -c < "$want") bytes)"
+                  exit 1
+                fi
+                strict=$((strict + 1))
+                ;;
+            esac
+          done
+          echo "==> byte-identical files OK ($strict files)"
+          echo "==> payload integrity OK"
+
       - name: Collect artifacts
         id: collect
         shell: sh

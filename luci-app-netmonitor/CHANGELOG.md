@@ -14,7 +14,45 @@
 条目分类：`新增` / `变更` / `修复` / `移除` / `弃用` / `安全`。
 
 
-## [Unreleased]
+## [1.4.2] - 2026-10-02
+
+### 修复
+
+- **CI「产物完整性护栏」把「容器缺 node」误判成「JS 被压缩破坏」**。
+  护栏步骤（`.github/workflows/build.yml` 的 *Verify payload integrity against
+  source*）用 `node --check` 校验打包产物里的每个 `.js` 文件，但 `openwrt/sdk`
+  容器默认不装 node，命令以 `node: not found`（exit 127）退出，护栏随即把第一个
+  被检文件（`netmonitor/chart.js`）误报为 `INVALID JAVASCRIPT in payload` 并终止
+  构建——实际上 chart.js 与源码逐字节一致、语法完全合法。修复：护栏开头检测
+  `node` 是否存在，缺则直接从 nodejs.org 下载官方静态二进制放入
+  `/usr/local/bin`（架构按 `uname -m` 映射，Alpine/musl 基座自动改用 musl 构建），
+  再执行校验。不用系统包管理器补装：SDK 容器的 Debian 11 (bullseye) 基座
+  2026-08 已 EOL，软件源随之 404（1.4.1 CI 实测 `apt-get install nodejs` 报
+  `Unable to fetch some archives`，exit 100）；且即便源可用，装上的也是 node 12，
+  太老、`node --check` 认不得本项目前端用的现代 JS 语法，仍会误报。下载方案与
+  系统包源解耦后，护栏恢复对 jsmin 类破坏的真实检出能力。
+
+
+## [1.4.1] - 2026-10-03
+
+### 修复
+
+- **TDesign 组件库在打包时被压坏，1.4.0 的组件体系实际不生效**。1.4.0 引入的
+  `tdesign.min.js`（7 MB 第三方 UMD bundle）经 `jsmin` 压缩后被破坏：文件从
+  28 行压成 3 行、删掉 691636 字节，删除点落在语句中间
+  （`var fu=...self:{};` 与紧随的 `!function(e){if(!e.WeakMap){` 之间），
+  产出的文件 `node --check` 直接报 `SyntaxError`，浏览器报
+  `missing ) after argument list`，`window.TDesign` 未定义。
+  现象极具迷惑性：页面框架、响应式布局、动态 SVG 动效全部正常，
+  DOM 里 `t-button` / `t-tag` / `t-switch` 与 `.nm-tcard` 计数也都非零，
+  但那只是**未升级的自定义标签**，无样式、无行为——组件体系等于没装。
+  修复：`Makefile` 在 `include luci.mk` 之前显式 `LUCI_MINIFY_JS:=0` 与
+  `LUCI_MINIFY_CSS:=0`。luci.mk 里是 `?=` 而非 `:=`，故可被覆盖；
+  位置必须在 include 之前（`JsMin` / `CssTidy` 宏在 include 时展开）。
+  验证：把仓库源文件直接放上设备后 `window.TDesign` 立即为 true，七页无 JS 错误。
+
+
+## [1.4.0] - 2026-10-03
 
 ### 新增
 
@@ -92,6 +130,7 @@
 
 
 ## [1.2.1] - 2026-09-19
+
 
 ### 修复
 
@@ -242,6 +281,9 @@
 - 动态 SVG 图标与动画系统，环形弧长等视觉元素由真实测量值换算，非固定长度的装饰。
 - 中文翻译（`po/zh_Hans`），随 `luci.mk` 打包为独立 i18n 包。
 
+[1.4.1]: https://github.com/LianXia233/luci-app-netmonitor/compare/v1.4.0...v1.4.1
+[1.4.0]: https://github.com/LianXia233/luci-app-netmonitor/compare/v1.3.0...v1.4.0
+[1.3.0]: https://github.com/LianXia233/luci-app-netmonitor/compare/v1.2.1...v1.3.0
 [1.2.0]: https://github.com/LianXia233/luci-app-netmonitor/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/LianXia233/luci-app-netmonitor/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/LianXia233/luci-app-netmonitor/compare/v1.0.0...v1.0.1
