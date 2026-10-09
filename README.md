@@ -1,10 +1,12 @@
 ## 📦 自用包自动更新
 
-- **更新时间**：2026-10-09 13:32:13
-- **更新文件数**：50
+- **更新时间**：2026-10-10 02:43:21
+- **更新文件数**：60
 - **更新插件**：
-  - `luci-app-argon-config`
-  - `luci-theme-argon`
+  - `luci-app-lanspeed`
+  - `luci-app-netmonitor`
+  - `luci-app-wechatpush`
+  - `openwrt-passwall`
 
 ---
 

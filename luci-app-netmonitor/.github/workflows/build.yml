@@ -338,8 +338,12 @@ jobs:
           # 根因：luci.mk 的 LUCI_MINIFY_JS / LUCI_MINIFY_CSS 默认 ?=1，会对每个
           # .js/.css 跑 jsmin / csstidy。该工具处理第三方 UMD bundle（28 行、含
           # /*! */ 许可证注释）时把文件压成 3 行、删掉 691636 字节，删除点落在
-          # 语句中间，直接破坏语法。已在 Makefile 里 LUCI_MINIFY_JS:=0 /
-          # LUCI_MINIFY_CSS:=0 关掉，此步负责证明「关掉之后产物不再被破坏」。
+          # 语句中间，直接破坏语法。
+          #
+          # 1.5.0 起该 UMD 已整体移除（改为自建原生组件层 ui.js，见 CHANGELOG），
+          # Makefile 随之恢复 LUCI_MINIFY_JS / LUCI_MINIFY_CSS := 1。这道护栏
+          # 因此从「证明关掉压缩后产物不被破坏」变成「持续验证压缩本身安全」——
+          # 删掉它等于放弃对 jsmin 类破坏的检出能力，仍需保留。
 
           # 校验对象：build_dir 下本包的 .pkgdir/<pkg>/ —— 即 OpenWrt 打包前
           # 把文件铺开的目标目录，内容与包内一致，且**不需要任何解包工具**。
@@ -378,6 +382,8 @@ jobs:
           # 剥注释后 tdesign 理论值 91.3%，与损坏后的 90.6% 几乎重合 —— 任何
           # 固定百分比阈值都会在「正常压缩」与「真实损坏」之间二选一：要么误报
           # 让 CI 永远红，要么漏报让坏产物发出去。
+          # （上例保留为历史记录：tdesign 已于1.5.0 移除，但这条结论本身
+          #   —— 体积比例无法区分「正常压缩」与「语法损坏」—— 依然成立。）
           #
           # 唯一能区分两者的判据是**语法**：正常压缩的产物仍能解析，被切断
           # 语句的不能。
@@ -406,9 +412,11 @@ jobs:
             fi
             if ! node --check "$want" >/dev/null 2>&1; then
               echo "::error::INVALID JAVASCRIPT in payload: ${want#$ROOT/}"
-              echo "::error::  node --check 失败 —— 该文件在打包中被破坏。"
-              echo "::error::  1.4.0 的 tdesign.min.js 即是此症状（jsmin 切断语句）。"
-              echo "::error::  检查 Makefile 里 LUCI_MINIFY_JS 是否仍为 1。"
+              echo "::error::  node --check 失败 —— 该文件在打包中被 jsmin 破坏。"
+              echo "::error::  历史案例：1.4.0 的 tdesign.min.js（第三方 UMD bundle）。"
+              echo "::error::  根因是 jsmin 处理超长行/ 许可证注释时切断语句。"
+              echo "::error::  若确认源码本身合法，考虑临时在 Makefile 里设"
+              echo "::error::  LUCI_MINIFY_JS:=0 并重新构建。"
               node --check "$want" 2>&1 | head -5 || true
               exit 1
             fi
