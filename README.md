@@ -1,10 +1,10 @@
 ## 📦 自用包自动更新
 
-- **更新时间**：2026-10-21 01:51:51
-- **更新文件数**：51
+- **更新时间**：2026-10-21 12:07:32
+- **更新文件数**：19
 - **更新插件**：
-  - `luci-app-aria2`
-  - `luci-theme-argon`
+  - `luci-app-bandix-plus`
+  - `luci-app-lucky`
   - `openwrt-passwall`
 
 ---
