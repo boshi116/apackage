@@ -1,13 +1,9 @@
 ## 📦 自用包自动更新
 
-- **更新时间**：2026-10-23 01:54:15
-- **更新文件数**：90
+- **更新时间**：2026-10-24 01:48:37
+- **更新文件数**：4
 - **更新插件**：
-  - `"openwrt-passwall`
-  - `luci-app-argon-config`
-  - `luci-theme-argon`
   - `openwrt-passwall`
-  - `smartdns`
 
 ---
 
