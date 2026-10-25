@@ -1,0 +1,27 @@
+{
+	"luci-app-argon-config-standalone": {
+		"description": "Manage standalone Argon theme settings and backgrounds",
+		"read": {
+			"file": {
+				"/www/luci-static/argon/background/": [ "list" ],
+				"/www/luci-static/argon/background/*": [ "list" ]
+			},
+			"ubus": {
+				"file": [ "list" ],
+				"luci.argon_config": [ "avail" ]
+			},
+			"uci": [ "argon" ]
+		},
+		"write": {
+			"cgi-io": [ "upload" ],
+			"file": {
+				"/tmp/argon-config-upload-*": [ "write" ]
+			},
+			"ubus": {
+				"file": [ "remove" ],
+				"luci.argon_config": [ "install", "remove" ]
+			},
+			"uci": [ "argon" ]
+		}
+	}
+}

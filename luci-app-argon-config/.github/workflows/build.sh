@@ -2,60 +2,47 @@
 set -eu
 
 cd /builder
+[ -d scripts ] || ./setup.sh
 
-archive_logs() {
-	status=$?
-	trap - 0
-	if [ -d logs ]; then
-		mkdir -p bin && tar -cJf bin/logs.tar.xz logs || :
-	fi
-	exit "$status"
-}
-trap archive_logs 0
-
-if [ ! -d ./scripts ]; then
-	./setup.sh
-fi
-
-sed -i 's/git\.openwrt\.org\/project\/luci/github\.com\/openwrt\/luci/g' ./feeds.conf.default
-# The SDK keeps core dependencies (OpenSSL, zlib, jsonfilter) in the base feed.
-# Index it before installing packages so their dependencies can be resolved.
-./scripts/feeds update base packages luci
+# Keep the exact feed revisions supplied with the stable SDK, including base
+# libraries required by LuCI. Use GitHub mirrors for the Git repositories.
+sed -e 's|https://git.openwrt.org/openwrt/openwrt.git|https://github.com/openwrt/openwrt.git|' \
+	-e 's|https://git.openwrt.org/feed/packages.git|https://github.com/openwrt/packages.git|' \
+	-e 's|https://git.openwrt.org/project/luci.git|https://github.com/openwrt/luci.git|' \
+	feeds.conf.default > feeds.conf
+for feed in base packages luci; do
+	# Stable SDKs may pin a tag, which cannot be updated with git pull.
+	[ -s "feeds/$feed.index" ] || ./scripts/feeds update "$feed"
+done
 ./scripts/feeds install -a -p base
-./scripts/feeds install -a -p packages
 ./scripts/feeds install -a -p luci
-mv ./bin/luci-app-argon-config ./package/
-mv ./bin/luci-theme-argon ./package/
-# This checkout supplies the compatibility package; avoid duplicate recipes.
-rm -rf ./package/luci-theme-argon/compat
 
+rm -rf package/luci-app-argon-config
+mkdir -p package/luci-app-argon-config
+cp -R /src/htdocs /src/po /src/root /src/Makefile package/luci-app-argon-config/
+# Argon is not in the official LuCI feed. Pin the last 2.x release for the
+# standalone app build; 3.x ships its own settings and migration recipe.
+[ -d package/luci-theme-argon ] ||
+	git clone --depth 1 --branch v2.4.8 https://github.com/jerrykuku/luci-theme-argon.git package/luci-theme-argon
+
+# The SDK ships CONFIG_ALL=y. Keep its target selection, then select only
+# this app and its languages instead of packaging every optional subpackage.
+[ -f .config ] || make defconfig
+sed -n '/^CONFIG_TARGET_/p; /^CONFIG_SDK[=_]/p' .config > .config.argon
+mv .config.argon .config
 cat >> .config <<'CONFIG'
-CONFIG_PACKAGE_luci-theme-argon=m
+# CONFIG_ALL is not set
+# CONFIG_ALL_KMODS is not set
+# CONFIG_ALL_NONSHARED is not set
 CONFIG_PACKAGE_luci-app-argon-config=m
-CONFIG_PACKAGE_luci-i18n-argon-config-ar=m
-CONFIG_PACKAGE_luci-i18n-argon-config-de=m
-CONFIG_PACKAGE_luci-i18n-argon-config-es=m
-CONFIG_PACKAGE_luci-i18n-argon-config-fr=m
-CONFIG_PACKAGE_luci-i18n-argon-config-it=m
-CONFIG_PACKAGE_luci-i18n-argon-config-ja=m
-CONFIG_PACKAGE_luci-i18n-argon-config-ko=m
-CONFIG_PACKAGE_luci-i18n-argon-config-nl=m
-CONFIG_PACKAGE_luci-i18n-argon-config-pl=m
-CONFIG_PACKAGE_luci-i18n-argon-config-pt-br=m
-CONFIG_PACKAGE_luci-i18n-argon-config-ru=m
-CONFIG_PACKAGE_luci-i18n-argon-config-tr=m
-CONFIG_PACKAGE_luci-i18n-argon-config-uk=m
-CONFIG_PACKAGE_luci-i18n-argon-config-vi=m
-CONFIG_PACKAGE_luci-i18n-argon-config-zh-cn=m
-CONFIG_PACKAGE_luci-i18n-argon-config-zh-tw=m
+CONFIG_LUCI_LANG_zh_Hans=y
+CONFIG_LUCI_LANG_zh_Hant=y
+CONFIG_LUCI_LANG_es=y
+CONFIG_LUCI_LANG_pl=y
+CONFIG_LUCI_LANG_pt_BR=y
+CONFIG_LUCI_LANG_ru=y
 CONFIG
-
 make defconfig
-make package/luci-theme-argon/compile V=s -j$(nproc) BUILD_LOG=1
-make package/luci-app-argon-config/compile V=s -j$(nproc) BUILD_LOG=1
-
-package_file="$(find bin/packages -type f \( -name 'luci-app-argon-config*.ipk' -o -name 'luci-app-argon-config*.apk' \) -print -quit)"
-if [ -z "$package_file" ]; then
-	echo 'Build did not produce luci-app-argon-config package' >&2
-	exit 1
-fi
+# Preserve the compiler's exit status even when collecting logs.
+trap 'tar -cJf /builder/bin/logs.tar.xz logs 2>/dev/null || true' EXIT
+make package/luci-app-argon-config/compile V=s -j2 BUILD_LOG=1

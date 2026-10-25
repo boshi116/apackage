@@ -1,0 +1,15 @@
+{
+	"admin/system/argon-config-app": {
+		"title": "Argon Config",
+		"order": 90,
+		"action": {
+			"type": "view",
+			"path": "argon-config-app"
+		},
+		"depends": {
+			"acl": [ "luci-app-argon-config-standalone" ],
+			"fs": { "/usr/share/argon/config-integrated": "absent" },
+			"uci": { "argon": true }
+		}
+	}
+}

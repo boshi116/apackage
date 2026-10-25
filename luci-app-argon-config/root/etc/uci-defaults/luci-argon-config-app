@@ -1,0 +1,36 @@
+#!/bin/sh
+
+# Restore the conffile before the old package releases ownership on upgrade.
+if [ -f /etc/argon-config-app-migration/argon ]; then
+	cp -p /etc/argon-config-app-migration/argon /etc/config/argon || exit 1
+	rm -f /etc/argon-config-app-migration/argon
+	rmdir /etc/argon-config-app-migration 2>/dev/null || true
+fi
+
+# Argon 3 owns both configuration and its settings page.
+[ ! -f /usr/share/argon/config-integrated ] || exit 0
+
+[ -e /etc/config/argon ] || touch /etc/config/argon || exit 1
+uci -q get 'argon.@global[0]' >/dev/null || uci add argon global >/dev/null || exit 1
+old_bing="$(uci -q get 'argon.@global[0].bing_background')"
+if [ -n "$old_bing" ]; then
+	if ! uci -q get 'argon.@global[0].online_wallpaper' >/dev/null; then
+		if [ "$old_bing" = 1 ]; then source=bing; else source=none; fi
+		uci set "argon.@global[0].online_wallpaper=$source" || exit 1
+	fi
+	uci -q delete 'argon.@global[0].bing_background'
+fi
+while read -r option value; do
+	uci -q get "argon.@global[0].$option" >/dev/null ||
+		uci set "argon.@global[0].$option=$value" || exit 1
+done <<'DEFAULTS'
+primary #5e72e4
+dark_primary #483d8b
+blur 10
+blur_dark 10
+transparency 0.5
+transparency_dark 0.5
+mode normal
+online_wallpaper none
+DEFAULTS
+uci commit argon

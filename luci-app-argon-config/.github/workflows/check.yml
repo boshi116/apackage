@@ -1,17 +1,11 @@
-name: CI
+name: Check and build
 
 on:
   push:
-    branches:
-      - master
-    paths:
-      - 'Makefile'
-      - '.github/workflows/**'
-      - 'tests/**'
+    branches: [master]
   pull_request:
-    branches:
-      - master
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -20,10 +14,16 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - name: Regression tests
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tests/*.test.js
+      - name: Test RPC and configuration migration on OpenWrt
         run: |
-          python3 -m unittest discover -s tests -v
+          for release in 25.12.6 24.10.8; do
+            docker run --rm -v "$PWD:/src:ro" "openwrt/rootfs:x86-64-$release" sh /src/tests/openwrt.sh
+          done
 
   build:
     needs: test
@@ -32,43 +32,28 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - version: '24.10.5'
-            format: ipk
-            image: ghcr.io/openwrt/sdk:x86-64-24.10.5
-          - version: '25.12.5'
+          - sdk: x86-64-25.12.6
             format: apk
-            image: ghcr.io/openwrt/sdk:x86-64-25.12.5
-    name: OpenWrt ${{ matrix.version }} (${{ matrix.format }})
+          - sdk: x86-64-24.10.8
+            format: ipk
     steps:
-      - uses: actions/checkout@v7
-      - name: Checkout theme dependency
-        uses: actions/checkout@v7
-        with:
-          repository: jerrykuku/luci-theme-argon
-          ref: 2565c3ca7c06253f68a2ea44d9ea00839ced1484
-          path: bin/luci-theme-argon
-      - name: Prepare
-        run: |
-          mkdir -p bin/luci-app-argon-config
-          cp Makefile bin/luci-app-argon-config/
-      - name: Docker Build
+      - uses: actions/checkout@v4
+      - name: Build with the matching stable SDK
         env:
-          SDK_IMAGE: ${{ matrix.image }}
+          SDK: ${{ matrix.sdk }}
         run: |
-          docker pull "$SDK_IMAGE"
-          docker run --rm -u root \
-            -v "$GITHUB_WORKSPACE/bin:/builder/bin" \
-            -v "$GITHUB_WORKSPACE/.github/workflows:/builder/workflows:ro" \
-            "$SDK_IMAGE" /bin/sh /builder/workflows/build.sh
-      - name: Upload packages
-        uses: actions/upload-artifact@v7
+          mkdir -p bin
+          docker run --rm --user root -e FORCE_UNSAFE_CONFIGURE=1 \
+            -v "$PWD:/src:ro" -v "$PWD/bin:/builder/bin" \
+            "openwrt/sdk:$SDK" /bin/sh /src/.github/workflows/build.sh
+      - uses: actions/upload-artifact@v4
         with:
-          name: argon-config-${{ matrix.version }}-${{ matrix.format }}
-          path: bin/packages/*/*/*argon-config*.${{ matrix.format }}
+          name: argon-config-${{ matrix.format }}
+          path: bin/packages/**/*argon-config*.${{ matrix.format }}
           if-no-files-found: error
-      - name: Upload Log
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v7
         with:
-          name: buildlog-${{ matrix.version }}
+          name: buildlog-${{ matrix.format }}
           path: bin/logs.tar.xz
+          if-no-files-found: ignore

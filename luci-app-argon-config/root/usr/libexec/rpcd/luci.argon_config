@@ -1,0 +1,81 @@
+#!/bin/sh
+
+. /usr/share/libubox/jshn.sh
+
+bg_path='/www/luci-static/argon/background'
+
+reply() {
+	json_init
+	json_add_int result "$1"
+	json_dump
+}
+
+valid_name() {
+	case "$1" in ''|.*|*/*|*\\*) return 1 ;; esac
+	[ "${#1}" -le 200 ] || return 1
+	[ "$(printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177')" = "$1" ]
+}
+
+valid_media() {
+	case "$(printf '%s' "$1" | tr 'A-Z' 'a-z')" in
+		*.gif|*.jpg|*.jpeg|*.png|*.webp|*.mp4|*.webm) return 0 ;;
+	esac
+	return 1
+}
+
+valid_upload() {
+	case "$1" in /tmp/argon-config-upload-*) ;; *) return 1 ;; esac
+	local token="${1#/tmp/argon-config-upload-}"
+	case "$token" in ''|*[!0-9a-f]*) return 1 ;; esac
+	[ "${#token}" -ge 16 ] && [ "${#token}" -le 64 ]
+}
+
+case "$1" in
+list)
+	echo '{"avail":{},"remove":{"filename":"String"},"install":{"tmpfile":"String","filename":"String"}}'
+	;;
+call)
+	case "$2" in
+	avail)
+		space_path="$bg_path"
+		[ -d "$space_path" ] || space_path='/www/luci-static/argon'
+		[ -d "$space_path" ] || space_path='/www'
+		avail="$(df -Pk "$space_path" 2>/dev/null | awk 'NR == 2 {print $4}')"
+		case "$avail" in ''|*[!0-9]*) avail=-1 ;; esac
+		json_init
+		json_add_int avail "$avail"
+		json_dump
+		;;
+	remove|install)
+		read -r input
+		json_load "$input" || { reply 1; exit 0; }
+		json_get_var filename filename
+		valid_name "$filename" || { reply 1; exit 0; }
+		valid_media "$filename" || { reply 2; exit 0; }
+		[ ! -L "$bg_path" ] && [ ! -L "$bg_path/$filename" ] || { reply 1; exit 0; }
+		if [ "$2" = remove ]; then
+			[ -f "$bg_path/$filename" ] && rm "$bg_path/$filename" && reply 0 || reply 5
+			exit 0
+		fi
+		json_get_var tmpfile tmpfile
+		valid_upload "$tmpfile" && [ ! -L "$tmpfile" ] && [ -f "$tmpfile" ] && [ -s "$tmpfile" ] || { reply 3; exit 0; }
+		[ ! -e "$bg_path/$filename" ] || { reply 4; exit 0; }
+		umask 077
+		mkdir -p "$bg_path" || { reply 5; exit 0; }
+		chmod 0755 "$bg_path" || { reply 5; exit 0; }
+		# Copy to a hidden file on the destination filesystem before publishing.
+		stage="$bg_path/.${tmpfile##*/}"
+		[ ! -e "$stage" ] && [ ! -L "$stage" ] || { reply 5; exit 0; }
+		trap 'rm -f "$stage"' EXIT
+		if cp "$tmpfile" "$stage" && chmod 0644 "$stage" &&
+			mv -n "$stage" "$bg_path/$filename" && [ ! -e "$stage" ]; then
+			rm -f "$tmpfile"
+			reply 0
+		else
+			reply 5
+		fi
+		;;
+	*) reply 1 ;;
+	esac
+	;;
+esac
