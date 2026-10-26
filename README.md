@@ -1,11 +1,10 @@
 ## 📦 自用包自动更新
 
-- **更新时间**：2026-10-26 01:00:11
-- **更新文件数**：12
+- **更新时间**：2026-10-26 12:09:08
+- **更新文件数**：31
 - **更新插件**：
-  - `luci-app-mosdns`
-  - `luci-app-quickfile`
-  - `openwrt-passwall`
+  - `luci-app-bandix`
+  - `luci-theme-argon`
 
 ---
 
