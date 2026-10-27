@@ -28,4 +28,4 @@ opkg install /path/to/bandix_xxx.ipk
 
 ## 维护者
 
-- [timsaya](https://github.com/timsaya) 
+- [timsaya](https://github.com/timsaya)

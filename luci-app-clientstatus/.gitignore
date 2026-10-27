@@ -1,4 +1,5 @@
 regit.sh
 luci-app-clientstatus_package/
-
+.workbuddy
+.DS_Store
 
