@@ -191,6 +191,7 @@ jobs:
             git_clone "https://github.com/ZeaKyX/luci-app-speedtest-web" "luci-app-speedtest-web" || true
             git_clone "https://github.com/vernesong/OpenClash" "OpenClash" || true
             git_clone "https://github.com/mgz0227/luci-app-ipsec-server" "luci-app-ipsec-server" || true
+            git_clone "https://github.com/yaonew/luci-app-quickfile" "luci-app-quickfile" || true
             
           ) &
           PID3=$!
