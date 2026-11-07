@@ -175,6 +175,7 @@ jobs:
             git_clone "https://github.com/sirpdboy/luci-app-taskplan" "luci-app-taskplan" || true
             git_clone "https://github.com/sirpdboy/luci-app-netwizard" "luci-app-netwizard" || true
             git_clone "https://github.com/gdy666/luci-app-lucky" "luci-app-lucky" || true
+            git_clone "https://github.com/hoobnn/luci-app-mihomo-traffic" "luci-app-mihomo-traffic" || true
           ) &
           PID2=$!
           
