@@ -1,0 +1,68 @@
+#!/bin/sh /etc/rc.common
+# Copyright (C) 2026 OpenWrt
+
+START=95
+USE_PROCD=1
+
+CRON_FILE="/etc/crontabs/root"
+TAG="# modem_redial_cron"
+
+start_service() {
+	local enabled cron_enabled cron_time udp_watchdog_enabled
+	config_load modem_redial
+	config_get_bool enabled config enabled 0
+	config_get_bool cron_enabled config cron_enabled 0
+	config_get cron_time config cron_time "0 4 * * *"
+	config_get_bool udp_watchdog_enabled config udp_watchdog_enabled 0
+
+	# 1. 清理并设置定时任务
+	mkdir -p /etc/crontabs
+	touch "$CRON_FILE"
+	sed -i "/$TAG/d" "$CRON_FILE" 2>/dev/null
+
+	# 若启用插件且开启定时任务，写入 crontabs
+	if [ "$enabled" = "1" ] && [ "$cron_enabled" = "1" ]; then
+		mkdir -p /tmp/log
+		echo "$cron_time /usr/bin/modem_redial >> /tmp/log/modem_redial.log 2>&1 $TAG" >> "$CRON_FILE"
+		/etc/init.d/cron restart 2>/dev/null
+	fi
+
+	# 2. UDP 连通性监测守护进程 (procd 托管)
+	mkdir -p /tmp/log /tmp/run
+	procd_open_instance "udp_watchdog"
+	procd_set_param command /usr/bin/python3 /usr/bin/modem_redial.py --watchdog
+	procd_set_param respawn 3600 5 0
+	procd_set_param file /etc/config/modem_redial
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+stop_service() {
+	if [ -f "$CRON_FILE" ]; then
+		sed -i "/$TAG/d" "$CRON_FILE" 2>/dev/null
+		/etc/init.d/cron restart 2>/dev/null
+	fi
+	killall -q -f "modem_redial.*--watchdog" 2>/dev/null || true
+	rm -f /tmp/run/modem_redial_watchdog.pid 2>/dev/null
+}
+
+reload_service() {
+	restart
+}
+
+service_triggers() {
+	procd_add_reload_trigger "modem_redial"
+}
+
+restart() {
+	stop_service
+	start_service
+}
+
+redial() {
+	/usr/bin/modem_redial
+}
+
+EXTRA_COMMANDS="redial"
+EXTRA_HELP="	redial	Immediately execute modem redial to change IP"
