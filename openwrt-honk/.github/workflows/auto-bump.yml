@@ -1,0 +1,276 @@
+name: Check honk/doona upstream
+
+on:
+  schedule:
+    - cron: '30 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: auto-bump-honk
+  cancel-in-progress: false
+
+env:
+  STAGING: auto-bump-staging-${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect upstream changes
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          . ci/pins.env
+
+          require_sha() {
+            if ! [[ "$1" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::$2 is not a full 40-character commit SHA: ${1:-<empty>}"
+              exit 1
+            fi
+          }
+
+          core_tag_new=$(git ls-remote --tags --refs "$CORE_REPOSITORY" 'refs/tags/v*' | awk '{sub("refs/tags/","",$2); print $2}' | sort -V | tail -1)
+          [ -n "$core_tag_new" ] || { echo "::error::no upstream tag found"; exit 1; }
+          core_new=$(git ls-remote "$CORE_REPOSITORY" "refs/tags/$core_tag_new^{}" | cut -f1)
+          [ -n "$core_new" ] || core_new=$(git ls-remote "$CORE_REPOSITORY" "refs/tags/$core_tag_new" | cut -f1)
+          doona_new=$(git ls-remote "$DOONA_REPOSITORY" HEAD | cut -f1)
+          require_sha "$core_new" core
+          require_sha "$doona_new" doona
+
+          doona_version_new=$(curl -fsSL "https://raw.githubusercontent.com/Zakkaus/doona/$doona_new/package.json" | jq -r .version)
+          if [ -z "$doona_version_new" ] || [ "$doona_version_new" = null ]; then
+            echo "::error::cannot read doona version from package.json at $doona_new"
+            exit 1
+          fi
+
+          if [ "$core_tag_new" = "$CORE_TAG" ] && [ "$doona_version_new" = "$DOONA_VERSION" ]; then
+            echo "No upstream release."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          changes=""
+          if [ "$core_new" != "$CORE_COMMIT" ]; then
+            changes="core $(printf '%s' "$CORE_COMMIT" | cut -c1-7)→$(printf '%s' "$core_new" | cut -c1-7)（$core_tag_new）"
+          fi
+          if [ "$doona_new" != "$DOONA_COMMIT" ]; then
+            changes="${changes:+$changes, }doona $(printf '%s' "$DOONA_COMMIT" | cut -c1-7)→$(printf '%s' "$doona_new" | cut -c1-7)"
+          fi
+          if [ "$doona_version_new" != "$DOONA_VERSION" ]; then
+            changes="${changes:+$changes, }doona $DOONA_VERSION→$doona_version_new"
+          fi
+
+          {
+            echo "changed=true"
+            echo "core_new=$core_new"
+            echo "core_tag_new=$core_tag_new"
+            echo "doona_new=$doona_new"
+            echo "doona_version_new=$doona_version_new"
+            echo "changes=$changes"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v7
+        if: steps.detect.outputs.changed == 'true'
+        with:
+          node-version: '24'
+
+      - name: Install Doona build tools
+        if: steps.detect.outputs.changed == 'true'
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Stage new pins
+        id: stage
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          base_sha=$(git rev-parse HEAD)
+          . ci/pins.env
+          core_new='${{ steps.detect.outputs.core_new }}'
+          doona_new='${{ steps.detect.outputs.doona_new }}'
+          today=$(TZ=Asia/Shanghai date +%Y.%m.%d)
+
+          # 程序版本 = YYYY.MM.DD；同一天再出程序版本就递增第四段（.1、.2 …），
+          # PKG_RELEASE 只留给纯打包修订，所以这里恒为 1。
+          # 直接写日期会把 2026.11.08 覆盖到 2026.11.08.2 之上，包管理器会当成降级。
+          bump_package() {
+            file=$1
+            old_version=$(sed -n 's/^PKG_VERSION:=//p' "$file")
+            case "$old_version" in
+              '') echo "::error::missing PKG_VERSION in $file"; exit 1 ;;
+              "$today") new_version="$today.1" ;;
+              "$today".*)
+                counter=${old_version#"$today".}
+                case "$counter" in ''|*[!0-9]*) echo "::error::invalid version $old_version in $file"; exit 1 ;; esac
+                new_version="$today.$((counter + 1))"
+                ;;
+              *) new_version="$today" ;;
+            esac
+            sed -i -e "s/^PKG_VERSION:=.*/PKG_VERSION:=$new_version/" \
+              -e "s/^PKG_RELEASE:=.*/PKG_RELEASE:=1/" "$file"
+          }
+
+          sed -i \
+            -e "s/^CORE_COMMIT=.*/CORE_COMMIT=$core_new/" \
+            -e "s/^CORE_TAG=.*/CORE_TAG=${{ steps.detect.outputs.core_tag_new }}/" \
+            -e "s/^DOONA_COMMIT=.*/DOONA_COMMIT=$doona_new/" \
+            -e "s/^DOONA_VERSION=.*/DOONA_VERSION=${{ steps.detect.outputs.doona_version_new }}/" \
+            ci/pins.env
+          if [ "$core_new" != "$CORE_COMMIT" ]; then
+            sed -i "s/^CORE_COMMIT:=.*/CORE_COMMIT:=$core_new/" honk/Makefile
+            bump_package honk/Makefile
+          fi
+          if [ "$doona_new" != "$DOONA_COMMIT" ]; then
+            provisional="doona-$(printf '%s' "$doona_new" | cut -c1-8)-candidate.tar.gz"
+            sed -i "s/^DOONA_ARCHIVE=.*/DOONA_ARCHIVE=$provisional/" ci/pins.env
+            ci/build-doona.sh
+            doona_hash=$(sha256sum "artifacts/cache/$provisional" | cut -d' ' -f1)
+            doona_archive="doona-$(printf '%s' "$doona_new" | cut -c1-8)-$(printf '%s' "$doona_hash" | cut -c1-12).tar.gz"
+            mv "artifacts/cache/$provisional" "artifacts/cache/$doona_archive"
+            sed -i "s/^DOONA_ARCHIVE=.*/DOONA_ARCHIVE=$doona_archive/" ci/pins.env
+            sed -i -e "s/^PKG_SOURCE:=.*/PKG_SOURCE:=$doona_archive/" \
+              -e "s/^PKG_HASH:=.*/PKG_HASH:=$doona_hash/" luci-app-honk/Makefile
+            bump_package luci-app-honk/Makefile
+          fi
+          bash scripts/check.sh
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Install core build tools
+        if: steps.detect.outputs.changed == 'true'
+        run: sudo apt-get update && sudo apt-get install -y ripgrep zstd
+
+      - name: Install Rust
+        if: steps.detect.outputs.changed == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Zig
+        if: steps.detect.outputs.changed == 'true'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.14.1
+
+      - name: Publish immutable source assets
+        id: assets
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HONK_SOURCE_TAG: source-${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          . ci/pins.env
+          # Assets are built and published before the candidate commit exists,
+          # so the commit can carry their final tag and SHA-256 values. Tag names
+          # use the run id and are never overwritten: every version keeps its
+          # own verified set.
+          ci/build-doona.sh
+          # 官方通道只用 stable lane；6.6 的 pin 与兼容补丁由实验通道自己维护。
+          CORE_LANE=stable ci/build-core.sh
+
+          tag="$HONK_SOURCE_TAG"
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" --target "$(git rev-parse HEAD)" \
+              --title "Source assets $tag" --prerelease --latest=false
+          for file in \
+            "artifacts/cache/honk-core-$CORE_COMMIT-x86_64.tar.gz" \
+            "artifacts/cache/honk-core-$CORE_COMMIT-aarch64.tar.gz" \
+            "artifacts/cache/honk-core-$CORE_COMMIT-armv7.tar.gz" \
+            "artifacts/cache/$DOONA_ARCHIVE" \
+            honk/generated-stage.mk \
+            honk/generated-provenance.json \
+            luci-app-honk/generated-doona-stage.mk; do
+            test -s "$file" || { echo "::error::missing source asset $file"; exit 1; }
+            gh release upload "$tag" "$file"
+          done
+
+          # Write the tag and the real hashes into the package Makefiles; the
+          # commit below therefore describes exactly what a feed build downloads.
+          sed -i "s|^HONK_SOURCE_TAG?=.*|HONK_SOURCE_TAG?=$tag|" honk/Makefile luci-app-honk/Makefile
+          for arch in X86_64 AARCH64 ARMV7; do
+            hash=$(sed -n "s/^HONK_HASH_${arch}:=//p" honk/generated-stage.mk)
+            [ "${#hash}" -eq 64 ] || { echo "::error::missing HONK_HASH_${arch}"; exit 1; }
+            sed -i "s|^HONK_HASH_${arch}?=.*|HONK_HASH_${arch}?=$hash|" honk/Makefile
+          done
+          echo "source_tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Verify committed metadata against the published assets
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Uses the committed (not generated) values, i.e. the download a plain
+          # feed build performs.
+          rm -f honk/generated-stage.mk luci-app-honk/generated-doona-stage.mk
+          bash scripts/check.sh
+          bash scripts/verify-source-assets.sh --download --tag '${{ steps.assets.outputs.source_tag }}'
+
+      - name: Commit candidate with pinned download metadata
+        id: commit
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name kenzok8
+          git config user.email kenzok8@gmail.com
+          git checkout -B "$STAGING"
+          git add ci/pins.env honk/Makefile luci-app-honk/Makefile
+          git commit -m "Pin Honk and Doona source assets" \
+            -m "改动：写入上游 pin 与固定资产，honk $(sed -n 's/^PKG_VERSION:=//p' honk/Makefile)-r$(sed -n 's/^PKG_RELEASE:=//p' honk/Makefile)，luci-app-honk $(sed -n 's/^PKG_VERSION:=//p' luci-app-honk/Makefile)-r$(sed -n 's/^PKG_RELEASE:=//p' luci-app-honk/Makefile)，来源 ${{ steps.assets.outputs.source_tag }}。" \
+            -m "原因：让候选提交自带完整下载地址与校验值，普通 feed 编译不依赖生成文件。"
+          git -c credential.helper='!gh auth git-credential' \
+            push origin "HEAD:refs/heads/$STAGING"
+          echo "staging_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and publish the release
+        id: verify
+        if: steps.detect.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          output=$(gh workflow run release.yml --ref "$STAGING" \
+            -f auto_publish=true -f base_sha='${{ steps.stage.outputs.base_sha }}')
+          run_id=$(printf '%s\n' "$output" | sed -nE 's|.*actions/runs/([0-9]+).*|\1|p' | tail -1)
+          case "$run_id" in ''|*[!0-9]*) echo "::error::cannot read release run ID: $output"; exit 1 ;; esac
+          expected_sha='${{ steps.commit.outputs.staging_sha }}'
+          actual_sha=
+          for _ in $(seq 1 60); do
+            actual_sha=$(gh run view "$run_id" --json headSha --jq .headSha 2>/dev/null || true)
+            [ -n "$actual_sha" ] && break
+            sleep 2
+          done
+          [ "$actual_sha" = "$expected_sha" ] || {
+            echo "::error::release run $run_id uses $actual_sha, expected $expected_sha"
+            exit 1
+          }
+          result=
+          for _ in $(seq 1 240); do
+            result=$(gh run view "$run_id" --json status,conclusion --jq '.status + " " + (.conclusion // "")')
+            if [ "${result%% *}" = completed ]; then
+              [ "${result#* }" = success ] || { echo "::error::release run $run_id: $result"; exit 1; }
+              break
+            fi
+            sleep 30
+          done
+          [ "${result%% *}" = completed ] || { echo "::error::release run $run_id timed out"; exit 1; }
+          release_tag=$(sh ci/release-tag.sh)
+          gh release view "$release_tag" >/dev/null 2>&1 || { echo "::error::release $release_tag is missing"; exit 1; }
+          git -c credential.helper='!gh auth git-credential' push origin --delete "$STAGING" || true
+
+          {
+            echo "## Honk released"
+            echo ""
+            echo "Release: \`$release_tag\`"
+            echo "Commit: \`${{ steps.commit.outputs.staging_sha }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

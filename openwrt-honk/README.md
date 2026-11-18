@@ -1,0 +1,183 @@
+<p align="center"><img src="docs/site/assets/logo.png" width="96" height="96" alt="Honk"></p>
+
+<h1 align="center">openwrt-honk</h1>
+
+<p align="center">OpenWrt / ImmortalWrt 25.12 透明代理一体包（内核 6.12+，7 架构 APK）<br><b>honk</b> 核心 + <b>Doona</b> Web 界面 + <b>luci-app-honk</b> 管理界面</p>
+
+<div align="center">
+  <a href="https://github.com/kenzok8/openwrt-honk/releases"><img alt="Release" src="https://img.shields.io/github/v/release/kenzok8/openwrt-honk?style=flat-square&label=release"></a>
+  <a href="https://github.com/kenzok8/openwrt-honk/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/kenzok8/openwrt-honk/total?style=flat-square&label=downloads"></a>
+  <a href="https://github.com/kenzok8/openwrt-honk/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/kenzok8/openwrt-honk/main?style=flat-square"></a>
+  <a href="https://github.com/kenzok8/openwrt-honk/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/kenzok8/openwrt-honk?style=flat-square"></a>
+  <a href="https://github.com/kenzok8/openwrt-honk/issues?q=is%3Aissue+is%3Aclosed"><img alt="Closed issues" src="https://img.shields.io/github/issues-closed/kenzok8/openwrt-honk?style=flat-square"></a>
+  <a href="https://github.com/kenzok8/openwrt-honk/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/kenzok8/openwrt-honk?style=flat-square"></a>
+</div>
+
+
+## 界面预览
+
+<table>
+<tr>
+<td align="center"><b>概览</b><br><img width="420" src="https://raw.githubusercontent.com/kenzok8/kenzok8/main/screenshot/honk/honk-overview.png"></td>
+<td align="center"><b>配置</b><br><img width="420" src="https://raw.githubusercontent.com/kenzok8/kenzok8/main/screenshot/honk/honk-configuration.png"></td>
+</tr>
+<tr>
+<td align="center"><b>维护</b><br><img width="420" src="https://raw.githubusercontent.com/kenzok8/kenzok8/main/screenshot/honk/honk-maintenance.png"></td>
+<td align="center"><b>Doona 核心界面</b><br><img width="420" src="https://raw.githubusercontent.com/kenzok8/kenzok8/main/screenshot/honk/honk-doona.png"></td>
+</tr>
+</table>
+
+## 这是什么
+
+| 组件 | 说明 |
+| :--- | :--- |
+| **honk** | 基于 eBPF 的透明代理核心，dae 风格的 Rust 重写。流量在内核态分流，直连流量几乎零开销，适合做软路由主力代理 |
+| **luci-app-honk** | LuCI 管理界面：概览、配置（订阅 / 粘贴节点 / dae 导入）、日志、维护（Geo 数据、软件包升级、配置备份、系统检查） |
+| **Doona** | 核心自带 Web 界面，随 LuCI 包安装到 `/usr/share/doona`，管理节点、分组、路由、DNS 与订阅，不另起服务 |
+
+## 支持范围
+
+| 架构 | 状态 |
+| :--- | :--- |
+| `x86_64` | 主力支持（软路由） |
+| `aarch64_cortex-a53` · `aarch64_cortex-a72` · `aarch64_cortex-a76` · `aarch64_generic` | 支持，ARM64 设备（含树莓派 5 等 a76 设备） |
+| `arm_cortex-a7_neon-vfpv4` · `arm_cortex-a9` | 实验性：25.12 内核满足 6.12，但上游只发 x86_64 / aarch64，这两个由源码交叉编译，尚未做真机验证 |
+
+- 稳定版核心要求 **Linux 6.12+**，目前公开安装入口对应 **OpenWrt / ImmortalWrt 25.12**；安装脚本会先检查内核。
+- 稳定版提供 `.apk`（25.12 / 内核 6.12+）。**24.10** 走 Linux 6.6 实验通道，提供 `.ipk`，内核要求 6.6.40+，安装方式见下。
+- 自己编固件的话，内核选项、依赖模块和常见的编译报错都写在[自行编译固件](https://kenzok8.github.io/openwrt-honk/build-firmware.html)。
+
+### Linux 6.6 实验兼容通道
+
+兼容核心基于 [6106757-lab/honk 的 kernel-floor-6.6 分支](https://github.com/6106757-lab/honk/tree/kernel-floor-6.6)，继承该分支的功能与限制。每天跟一次该分支，有提交才重新出包；固定提交和 OpenWrt 集成补丁摘要位于 [ci/pins-linux66.env](ci/pins-linux66.env)，与稳定通道独立。
+
+- 最低内核 `6.6.40`。官方 OpenWrt 24.10.8（内核 6.6.144）已通过安装、启停、重启、升级与真实流量验证；其余架构编译通过不等于已做真机验收。
+- 兼容包复用 LuCI 和 Doona，面板概览显示「Linux 6.6 实验版」；需要匹配的内核模块，以及内置或按 `uname -r` 精确匹配的外部 BTF。
+- 发布走独立的预发布 Release（tag 形如 `linux66-<日期>-r<run_id>`，包版本按日期）与 `openwrt-feed/honk/24.10/<arch>/`，由聚合工作流统一生成并签名 opkg 索引；`linux66.yml` 每天自动跟上游分支，有新提交就构建并发布；手动触发要勾 `publish` 才发。
+- LuCI 一键升级只允许同通道（6.6 核心从 24.10 源升级、稳定核心从 25.12 源升级），跨通道会被拒绝。
+- 两个通道的配置备份不能互导（恢复会报 `incompatible_core_version`），换通道请手工搬 `node {}` 块。
+- UDP 会话容量取决于文件描述符和内存预算。本地 `nofile=4096` 验证中上限为 168 个，高频新建会话达到上限后会丢包，空闲回收后恢复；不适合作为高并发支持承诺。
+- 内核不提供 kprobe BPF 时，UDP 内核路径观测会降级；外置 BTF 不能补齐这一能力，不能只按 `6.6` 版本号认定功能完整。
+- AArch64 模拟环境的连续规则重载测试出现过短暂 UDP 丢包；无重载对照通过，目前不承诺重载期间 UDP 无损。
+
+Linux x86_64 构建机上可执行：
+
+```bash
+CORE_LANE=linux66 CORE_ARCHS=x86_64 bash ci/build-core.sh
+python3 ci/prepare-linux66-package.py
+```
+
+核心归档与兼容信息写入 `artifacts/cache/` 和 `honk/generated-linux66-*`，实验包源码准备到 `artifacts/linux66-package/`。将其中的 `dl/` 复制到 24.10 SDK 的 `dl/`，再编译 `honk` 与 `luci-app-honk`；此流程用于本地验收，版本号尚未分配为新的公开 Release。
+
+更换或卸载实验包前，先在 LuCI 停止服务并确认已停止，再操作软件包管理器。
+
+## 安装
+
+```bash
+# 大陆推荐：jsDelivr 镜像，比 ghfast 之类的加速站稳定
+wget -O - https://cdn.jsdelivr.net/gh/kenzok8/openwrt-honk@main/scripts/install.sh | ash
+```
+
+```bash
+# 直连 GitHub：镜像还没同步到最新脚本时用
+wget -O - https://raw.githubusercontent.com/kenzok8/openwrt-honk/refs/heads/main/scripts/install.sh | ash
+```
+
+> - jsDelivr 对 `@main` 有缓存（最长约 12 小时），刚改过的脚本可能延迟生效；脚本执行时仍会去 GitHub 取最新 Release，装到的版本不受影响。
+> - 安装包下载默认走 `GH_PROXY`（`https://ghfast.top/`），失败自动回落直连 GitHub。换加速站：`GH_PROXY=https://你的加速站/ wget -O - ... | ash`。
+> - 脚本会复用设备已有的 Geo 数据包；缺少时从聚合源下载，失败则用设备现有软件源。
+
+装了什么：
+
+- `honk` —— honk-core 二进制 + 服务脚本 + 默认配置
+- `luci-app-honk` —— LuCI 界面 + 中文翻译（编译进主包）+ Doona 资产
+- Geo 数据来自 `v2ray-geoip` / `v2ray-geosite`，与 daede 共用 `/usr/share/v2ray`，可在维护页手动或定时更新
+
+### 卸载
+
+```bash
+wget -O - https://cdn.jsdelivr.net/gh/kenzok8/openwrt-honk@main/scripts/uninstall.sh | ash
+```
+
+## 升级
+
+两条路，选一条即可。
+
+**① 重跑安装脚本**（不用配软件源，最稳）
+
+```bash
+wget -O - https://cdn.jsdelivr.net/gh/kenzok8/openwrt-honk@main/scripts/install.sh | ash
+```
+
+**② 加软件源**，之后在 LuCI「服务 → Honk → 维护 → 软件包更新」里点升级
+
+```bash
+wget -qO- https://down.dllkids.xyz/openwrt-feed/openwrt-feed-setup.sh | sh
+```
+
+> 「软件包更新」卡片只查本机 apk/opkg 源，不查 GitHub。用安装脚本装的机器没有把 feed 写进源，卡片会一直显示「已是最新」；先跑上面这条软件源脚本（装公钥 + 写源 + 刷索引）卡片才有用。
+> 刚发布的版本要等 feed 同步过去才会进索引，急着升级直接重跑安装脚本。
+
+## 使用
+
+在 LuCI「服务 → Honk」初始化服务，运行系统检查后启动。Doona 界面仅在已初始化、正在运行且 API 就绪时开放。
+
+新装默认使用一份完整的 `/etc/honk/config.dae`，包含 `global`、`experimental`、节点、路由和 DNS。概览页的 LAN、端口和 Clash API 选项只供首次引导使用；初始化后在配置页编辑配置，启动和修复不会按旧 UCI 值重建这些字段。
+
+升级时包管理器会保留用户改过的主配置和 `system.dae`；仍引用 `system.dae` 的用户可在配置编辑器预览合并，确认后才应用。旧文件和已有草稿会保留。复杂 include 不自动展开，仍按原文件运行。备份恢复也保留文件内的接口和监听值，不再按本机 UCI 自动改写。
+
+从旧布局升级时，包管理器可能在一种情况下替换 `config.dae`：本次测试中，它发生在装完包、完成引导、从未启动过服务的状态下，因为此时旧主配置与包内默认文件字节完全相同。`honk` 包为此在升级前后各跑一次钩子：升级前把旧配置存到 `/etc/.honk-preupgrade/`，升级后若确认无核心运行、当前文件就是本包模板、`system.dae` 未变，就把旧配置原样写回。钩子本身不做任何服务启停：是否启动由 `enabled` 等现有状态和 `default_postinst` 决定，恢复失败也不会阻止后续默认的 start 继续执行。写回失败会回滚并记日志，不改 UCI、不合并。APK 上 `pre-upgrade` 失败时 apk 不会中止安装，这种情况下没有副本可写回，配置会保持被替换后的状态。
+
+节点与订阅直接写进 `/etc/honk/config.dae`（`node { label: 'share-link' }` 或 `subscription { tag: 'url' }`），重载 Honk 后生效；路由、DNS 与订阅也可以只在 Doona 面板里管。
+
+> 管理入口和 API 只应在可信 LAN 内使用。若 LuCI 走未加密的 HTTP，浏览器到路由器之间的登录信息和 API 流量没有传输加密，请勿把管理页面暴露到互联网。
+
+## 依赖
+
+| 包名 | 说明 |
+| :--- | :--- |
+| `ca-bundle` | CA 证书包 |
+| `kmod-sched-core` / `kmod-sched-bpf` | eBPF 流量调度 |
+| `kmod-veth` | 虚拟以太网设备 |
+| `kmod-nft-queue` | nftables 队列 |
+| `v2ray-geoip` / `v2ray-geosite` | 路由 GeoIP / GeoSite 数据 |
+| `rpcd` / `luci-base` / `cgi-io` | LuCI 运行依赖 |
+
+## 内核 BTF
+
+honk-core 用 CO-RE eBPF，缺 BTF 起不来。查找顺序与核心一致：
+
+1. `HONK_VMLINUX_BTF` 指定的文件 —— 设了它就只认这一个，读不到直接拒绝启动，不回退。
+2. `/sys/kernel/btf/vmlinux` —— 内核自带 BTF 的固件有（如 ImmortalWrt）。
+3. `/usr/lib/debug/boot/vmlinux` —— [vmlinux-btf](https://github.com/kenzok8/vmlinux-btf) 装的就是这里，官方 OpenWrt 走这条。
+
+补充说明：
+
+- 安装脚本发现两条默认路径都没有时，按内核版本补装 `vmlinux-btf`：软件源里有当前内核那个版本就直接装；没有就按 `uname -r` 去 [vmlinux-btf 的 releases](https://github.com/kenzok8/vmlinux-btf/releases/tag/latest) 取同版本包（feed 只保留最新一版，内核一换就对不上）；两处都没有才只打印提示。同系列补丁号不同的包照装但打警告。
+- 自编译或快照内核没有现成包，拿同一次编译的 `vmlinux` 跑 `pahole --btf_encode_detached=vmlinux.btf vmlinux`，放到 `/usr/lib/debug/boot/vmlinux`，或用 `HONK_VMLINUX_BTF` 指过去。
+- 只有内核自带 BTF 时才启用「原生 UDP 接收追踪」，用外部 BTF 时该功能降级，其余功能不受影响。
+
+## 构建与发布
+
+**固定输入。** 核心和 Doona 的完整提交、Doona OpenWrt 补丁摘要、OpenWrt 25.12.4 x86/64 官方 SDK 地址和 SHA256 都固定在 `ci/pins.env`。Doona 从源码构建并保留 OpenWrt 同源 API 补丁，归档不含可选中文字体，浏览器用系统字体。
+
+**自动更新。** 核心跟官方 `v*` tag（eBPF nightly 从上游源码读，不写死），Doona 跟版本号。`auto-bump.yml` 每天检查一次：官方出新 tag 或 Doona 版本号变了，才在独立分支写入 pin、包版本和归档哈希，跑全部 7 组 SDK 安装包，矩阵全绿直接推进 `main`、正式 tag、Release 与 R2 软件源；任一 SDK 失败就只留候选分支，不动正式源。
+
+**构建环境。** 完整构建（含核心）需在大小写敏感的 Linux 文件系统上跑（Doona 上游有仅大小写不同的文件）。需要 Rust / rustup、Zig 0.14.1、Node.js 22.13+ 与 Corepack、Git、curl、ripgrep、GNU tar、zstd、`readelf`，以及 `build-essential`、clang、LLVM、libbpf、libelf、pkg-config、CMake、libclang 和 OpenWrt SDK 所需工具。核心交叉编译脚本会核对 Rust / Doona / SDK 输入与 Zig、bpf-linker 版本；SDK 阶段限定 Linux x86_64。
+
+```sh
+bash scripts/check.sh
+ci/build-doona.sh
+ci/build-core.sh
+```
+
+源码归档写入被 Git 忽略的 `artifacts/cache/`。7 组 SDK 安装包（7 架构 × SDK 25.12）由 `release.yml` 构建，它从本次运行独立的源码资产 tag 下载带 SHA256 的阶段文件，任一散列不匹配或安装包缺失都会使构建失败。
+
+## 致谢
+
+- [honk](https://github.com/daeuniverse/honk) —— eBPF 透明代理核心
+- [doona](https://github.com/Zakkaus/doona) —— 核心 Web 界面
+
+## 许可证
+
+本仓库原创集成文件采用 GPL-3.0-only。Honk 核心与 Doona 各自保留上游许可和第三方声明，打包时随软件安装至 `/usr/share/licenses/`。核心提交、Doona 提交、补丁摘要及实际阶段归档散列记录在构建生成的 provenance 文件中。

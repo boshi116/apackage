@@ -1,0 +1,406 @@
+name: Build experimental Linux 6.6 packages
+
+on:
+  schedule:
+    - cron: '30 1 * * *'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: '构建后发布到 Release 和实验源（关闭则只出 artifact）'
+        type: boolean
+        default: false
+      force:
+        description: '上游没有新提交也重新构建（改了 LuCI 或打包时需要）'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux66-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pin:
+    name: Sync the 6.6 core pin
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      changed: ${{ steps.sync.outputs.changed }}
+      version: ${{ steps.sync.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Sync pin
+        id: sync
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          . ci/pins-linux66.env
+          version=$(TZ=Asia/Shanghai date +%Y.%m.%d)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            exit 0
+          fi
+          head=$(git ls-remote "$CORE_REPOSITORY" "refs/heads/$CORE_BRANCH" | cut -f1)
+          [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::cannot resolve $CORE_BRANCH"; exit 1; }
+          if [ "$head" = "$CORE_COMMIT" ]; then
+            echo "Pin already at $head."
+            # 只改 LuCI 时上游 pin 不动，勾 force 才能重出。
+            if [ "${{ inputs.force }}" = "true" ]; then
+              echo "Force rebuild requested, keeping changed=true."
+              exit 0
+            fi
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          sed -i "s/^CORE_COMMIT=.*/CORE_COMMIT=$head/" ci/pins-linux66.env
+          bash scripts/check.sh
+          git config user.name kenzok8
+          git config user.email kenzok8@gmail.com
+          git add ci/pins-linux66.env
+          git commit -m "Pin the Linux 6.6 core at $version" \
+            -m "改动：ci/pins-linux66.env 的 CORE_COMMIT 跟到 $(printf '%s' "$head" | cut -c1-7)，实验包版本 $version-r1。" \
+            -m "原因：让 24.10 用户能装到最新的兼容核心，跑出问题才好反馈。"
+          git -c credential.helper='!gh auth git-credential' push origin HEAD:main
+
+  core:
+    needs: pin
+    if: needs.pin.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: [x86_64, aarch64, armv7]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y clang cmake libclang-dev pkg-config ripgrep zstd
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.14.1
+
+      - name: Check package sources
+        run: bash scripts/check.sh
+
+      - name: Build fixed compatibility source
+        env:
+          CORE_LANE: linux66
+          CORE_ARCHS: ${{ matrix.architecture }}
+          CARGO_BUILD_JOBS: '2'
+        run: |
+          set -euo pipefail
+          bash ci/build-core.sh
+          cp ci/pins-linux66.env artifacts/cache/
+          cp honk/generated-linux66-provenance.json artifacts/cache/
+          cp honk/generated-linux66-stage.mk artifacts/cache/
+          cd artifacts/cache
+          sha256sum honk-core-*-linux66-*.tar.gz > SHA256SUMS
+
+      - name: Keep experimental build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: honk-linux66-${{ matrix.architecture }}-${{ github.sha }}
+          path: artifacts/cache/
+          if-no-files-found: error
+          retention-days: 14
+
+  sdk24:
+    needs: [pin, core]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sdk_arch: x86_64
+            core_arch: x86_64
+          - sdk_arch: aarch64_generic
+            core_arch: aarch64
+          - sdk_arch: aarch64_cortex-a53
+            core_arch: aarch64
+          - sdk_arch: aarch64_cortex-a72
+            core_arch: aarch64
+          - sdk_arch: aarch64_cortex-a76
+            core_arch: aarch64
+          - sdk_arch: arm_cortex-a7_neon-vfpv4
+            core_arch: armv7
+          - sdk_arch: arm_cortex-a9
+            core_arch: armv7
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: honk-linux66-${{ matrix.core_arch }}-${{ github.sha }}
+          path: artifacts/cache
+
+      - name: Cache the Doona source archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          . ci/pins.env
+          tag=$(sed -n 's/^HONK_SOURCE_TAG?=//p' honk/Makefile)
+          mkdir -p artifacts/cache
+          for attempt in 1 2 3; do
+            if gh release download "$tag" --repo "$GITHUB_REPOSITORY" --pattern "$DOONA_ARCHIVE" --dir artifacts/cache --clobber; then
+              break
+            fi
+            sleep $((attempt * 5))
+          done
+          test -s "artifacts/cache/$DOONA_ARCHIVE"
+
+      - name: Prepare isolated SDK feed
+        env:
+          LINUX66_VERSION: ${{ needs.pin.outputs.version }}
+        run: |
+          set -euo pipefail
+          cp artifacts/cache/generated-linux66-stage.mk honk/
+          cp artifacts/cache/generated-linux66-provenance.json honk/
+          python3 ci/prepare-linux66-package.py
+          printf '\nPKG_SOURCE_URL:=file:///feed/dl/\n' >> artifacts/linux66-package/honk/generated-stage.mk
+          mkdir -p artifacts/linux66-sdk-output
+
+      - name: Check out fixed SDK action
+        uses: actions/checkout@v7
+        with:
+          repository: kenzok8/gh-action-sdk
+          ref: 44f98c51d04aebd1aa79fe4f603559c1ec2085da
+          path: .sdk-action
+          persist-credentials: false
+
+      - name: Build experimental OpenWrt 24.10 IPKs
+        uses: ./.sdk-action
+        env:
+          ARCH: ${{ matrix.sdk_arch }}-openwrt-24.10
+          CONTAINER: immortalwrt/sdk
+          FEEDNAME: honk
+          FEED_DIR: ${{ github.workspace }}/artifacts/linux66-package
+          ARTIFACTS_DIR: ${{ github.workspace }}/artifacts/linux66-sdk-output
+          EXTRA_FEEDS: src-git|wall|https://github.com/kenzok8/wall^ebd9d11b4ff8ee91b1d14e98c79523311eb5ae44
+          NO_SHFMT_CHECK: '1'
+          PACKAGES: honk luci-app-honk
+
+      - name: Verify package payloads
+        env:
+          CORE_ARCH: ${{ matrix.core_arch }}
+          SDK_ARCH: ${{ matrix.sdk_arch }}
+        run: |
+          set -euo pipefail
+          python3 ci/verify-linux66-ipk.py \
+            --packages-dir "artifacts/linux66-sdk-output/bin/packages/$SDK_ARCH/honk" \
+            --feed-dir artifacts/linux66-package \
+            --core-arch "$CORE_ARCH" --package-arch "$SDK_ARCH" \
+            --output-dir artifacts/linux66-verified
+
+      - name: Keep verified experimental IPKs
+        uses: actions/upload-artifact@v7
+        with:
+          name: honk-linux66-sdk24-${{ matrix.sdk_arch }}-${{ github.sha }}
+          path: artifacts/linux66-verified/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish experimental 6.6 packages
+    needs: [pin, core, sdk24]
+    if: github.ref == 'refs/heads/main' && needs.pin.outputs.changed == 'true' && (github.event_name == 'schedule' || inputs.publish)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Flatten assets
+        id: meta
+        run: |
+          set -euo pipefail
+          version='${{ needs.pin.outputs.version }}'
+          [ -n "$version" ] || { echo "::error::cannot read version"; exit 1; }
+          mkdir -p dist
+          find artifacts -path '*sdk24*' -name '*.ipk' -exec cp -v {} dist/ \;
+          find artifacts -path '*honk-linux66-*' -name 'honk-core-*.tar.gz' -exec cp -v {} dist/ \;
+          find artifacts -path '*honk-linux66-*' -name 'generated-linux66-*' -exec cp -v {} dist/ \;
+          test "$(find dist -name '*.ipk' | wc -l)" -ge 8
+          ( cd dist && sha256sum ./* > SHA256SUMS )
+
+          # tag 跟包版本走，不用 run ID；同日多版由包版本自身区分。
+          honk_ver=$(ls dist/honk_*_x86_64.ipk | head -n 1 | sed 's|^.*/honk_||; s|_.*$||; s|-r[0-9]*$||')
+          luci_ver=$(ls dist/luci-app-honk_*_all.ipk | head -n 1 | sed 's|^.*/luci-app-honk_||; s|_.*$||; s|-r[0-9]*$||')
+          version=$(printf '%s\n%s\n' "$honk_ver" "$luci_ver" | sort -V | tail -n 1)
+          tag="linux66-$version"
+          remote_tag=$(git ls-remote --tags origin "refs/tags/$tag" | awk '{print $1}')
+          if [ -n "$remote_tag" ]; then
+            echo "::error::tag $tag 已存在（$remote_tag）；重跑同一版直接复用，新版本请先提高包版本"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/$tag"
+          luci="$(ls dist/luci-app-honk_*_all.ipk | head -n 1)"
+          {
+            printf '# openwrt-honk %s\n\n' "$tag"
+            cat <<'MD'
+          **Linux 6.6 实验通道，给 OpenWrt / ImmortalWrt 24.10（opkg / IPK）。**
+
+          | 项 | 值 |
+          | :--- | :--- |
+          | 适用系统 | OpenWrt / ImmortalWrt 24.10（opkg，`.ipk`） |
+          | 最低内核 | Linux 6.6.40，更低的装上也起不来 |
+          | 已验证 | 官方 OpenWrt 24.10.8（内核 6.6.144）：安装、启停、重启、升级、真实流量 |
+          | 不适用 | 25.12 及以上（apk / `.apk`），请用主 Release |
+          | 实验源 | `https://down.dllkids.xyz/openwrt-feed/honk/24.10/<arch>/` |
+
+          ## 装之前先自查
+
+          ```sh
+          uname -r                                                  # 需要 6.6.40 或更高
+          ls /sys/kernel/btf/vmlinux 2>/dev/null || echo "缺 BTF"     # 没有就得先补
+          ```
+
+          内核偏低或没有 BTF 时，honk 启动检查会直接拒绝。缺 BTF 装与 `uname -r` 同版本的包：
+          https://github.com/kenzok8/vmlinux-btf/releases/tag/latest
+
+          ## 📦 SDK 24.10 · 实验版 (IPK)
+
+          | 架构 | honk | luci-app-honk |
+          | :--- | :--- | :--- |
+          MD
+            for arch in x86_64 aarch64_cortex-a53 aarch64_cortex-a72 aarch64_cortex-a76 \
+                        aarch64_generic arm_cortex-a7_neon-vfpv4 arm_cortex-a9; do
+              pkg="$(ls dist/honk_*_"$arch".ipk 2>/dev/null | head -n 1 || true)"
+              if [ -n "$pkg" ]; then
+                echo "| \`$arch\` | [$(basename "$pkg")]($base/$(basename "$pkg")) | [$(basename "$luci")]($base/$(basename "$luci")) |"
+              else
+                echo "| \`$arch\` | — | — |"
+              fi
+            done
+            cat <<'MD'
+
+          ## 安装
+
+          最省事是跑安装脚本，它会按你的架构挑包，缺 BTF 时还会自动补对应内核版本的那份：
+
+          ```sh
+          wget -O - https://cdn.jsdelivr.net/gh/kenzok8/openwrt-honk@main/scripts/install.sh | ash
+          ```
+
+          手动装：从上表下自己架构的两个包到 `/tmp`，再 `cd /tmp && opkg install ./honk_*.ipk ./luci-app-honk_*_all.ipk`。
+
+          ## 本页其他文件
+
+          | 文件 | 用途 |
+          | :--- | :--- |
+          | `honk-core-*-linux66-*.tar.gz` | 兼容核心，已打进 ipk，单下只用于排查 |
+          | `generated-linux66-*` | 本次构建的 pin 与来源信息 |
+          | `SHA256SUMS` | 校验值 |
+
+          ## 已知限制
+
+          - 实验通道，不是稳定版。配置备份与 25.12 通道不能互导，恢复会报 `incompatible_core_version`
+          - 需要与该内核匹配的 `kmod-*`，以及内置 BTF 或按 `uname -r` 精确匹配的外部 BTF
+          - 只在这版内核上验证过 6.6 通道；其余架构编译通过不等于真机验收
+          - 出问题请带 `uname -r`、`cat /etc/openwrt_release` 和 `logread | grep honk`
+          MD
+          } > notes.md
+          cat notes.md
+
+      - name: Publish experimental release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          if gh release view "$TAG" --repo "$repo" >/dev/null 2>&1; then
+            gh release delete "$TAG" --repo "$repo" --yes
+          fi
+          gh release create "$TAG" --repo "$repo" \
+            --target main \
+            --title "Linux 6.6 实验版 ${RELEASE_VERSION}（OpenWrt 24.10 · 内核 6.6.40+）" \
+            --notes-file notes.md --prerelease --latest=false dist/*
+
+      - name: Upload IPKs to the experimental feed path
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          [ -z "${R2_BUCKET:-}" ] && { echo "No R2 bucket, skip upload"; exit 0; }
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf <<EOF
+          [r2]
+          type = s3
+          provider = Cloudflare
+          access_key_id = ${R2_ACCESS_KEY_ID}
+          secret_access_key = ${R2_SECRET_ACCESS_KEY}
+          endpoint = ${R2_ENDPOINT}
+          acl = private
+          no_check_bucket = true
+          EOF
+          all_ipk=$(find dist -name '*_all.ipk')
+          for arch in x86_64 aarch64_generic aarch64_cortex-a53 aarch64_cortex-a72 \
+                      aarch64_cortex-a76 arm_cortex-a7_neon-vfpv4 arm_cortex-a9; do
+            dest="r2:${R2_BUCKET}/openwrt-feed/honk/24.10/${arch}/"
+            uploaded=0
+            for ipk in dist/*_"${arch}".ipk; do
+              [ -f "$ipk" ] || continue
+              rclone copy "$ipk" "$dest" --checksum --transfers 4
+              uploaded=1
+            done
+            [ "$uploaded" = 1 ] || { echo "::error::no IPK for $arch"; exit 1; }
+            if [ -n "$all_ipk" ]; then
+              rclone copy "$all_ipk" "$dest" --checksum --transfers 4
+            fi
+            echo "uploaded -> $dest"
+          done
+
+      - name: Trigger unified feed aggregation
+        env:
+          AGGREGATE_FEED_TOKEN: ${{ secrets.AGGREGATE_FEED_TOKEN }}
+        run: |
+          [ -z "$AGGREGATE_FEED_TOKEN" ] && { echo "No aggregate token, skip trigger"; exit 0; }
+          curl -fsSL -X POST \
+            -H "Authorization: Bearer ${AGGREGATE_FEED_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/kenzok8/openwrt-clashoo/actions/workflows/aggregate-feed.yml/dispatches \
+            -d '{"ref":"main","inputs":{"trigger_project":"honk"}}' || echo "Aggregate trigger failed; scheduled workflow will retry."
