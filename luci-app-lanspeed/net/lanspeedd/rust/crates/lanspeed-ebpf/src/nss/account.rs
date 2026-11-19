@@ -1,0 +1,261 @@
+use core::{ptr::addr_of_mut, slice};
+
+use aya_ebpf::helpers::generated::bpf_skb_load_bytes;
+use aya_ebpf::{
+    bindings::BPF_NOEXIST,
+    helpers::bpf_ktime_get_ns,
+    macros::map,
+    maps::{LruHashMap, PerCpuArray, PerCpuHashMap},
+    programs::TcContext,
+};
+use lanspeed_common::{
+    accounting::tc_frame_accounting,
+    packet::{gro_repeated_header_len, is_valid_client_mac, route_addresses, vlan_zone},
+    FastCounterValue, LanspeedCounters, LanspeedKey, DIR_TX, FAST_COUNTERS_MAP_CAPACITY,
+    FAST_COUNTER_ABI_VERSION, MAX_CLIENTS,
+};
+
+use crate::atomics::add_u64;
+
+use super::routed::is_lan_local_frame;
+
+#[cfg(feature = "conntrack-kfunc")]
+use super::conntrack::try_count_connection;
+#[cfg(feature = "conntrack-kfunc")]
+use lanspeed_common::{LanspeedConnKey, MAX_CONN_TUPLES};
+
+const ETHERNET_HEADER_LEN: usize = 14;
+const PACKET_PREFIX_LEN: usize = 142;
+// The parser only receives PACKET_PREFIX_LEN bytes. The extra physical space
+// keeps verifier range widening for variable transport offsets inside the map.
+const PACKET_SCRATCH_LEN: usize = 160;
+
+#[repr(C)]
+struct PacketPrefix {
+    bytes: [u8; PACKET_SCRATCH_LEN],
+}
+
+#[map(name = "lanspeed_clients")]
+pub static LANSPEED_CLIENTS: LruHashMap<LanspeedKey, LanspeedCounters> =
+    LruHashMap::with_max_entries(MAX_CLIENTS, 0);
+
+/// Per-CPU FastS cumulative counters. The stable-read protocol is deliberately
+/// separate from the legacy client ledger above: userspace can reject a torn
+/// copy without changing the evidence/accounting owner.
+#[map(name = "lanspeed_fast_counters")]
+static LANSPEED_FAST_COUNTERS: PerCpuHashMap<LanspeedKey, FastCounterValue> =
+    PerCpuHashMap::with_max_entries(FAST_COUNTERS_MAP_CAPACITY, 0);
+
+/// Routed-only FastS counters for the explicit Internet view. The ordinary
+/// FastS and client maps retain their all-frame semantics when that view is
+/// disabled.
+#[map(name = "lanspeed_routed_fast_counters")]
+static LANSPEED_ROUTED_FAST_COUNTERS: PerCpuHashMap<LanspeedKey, FastCounterValue> =
+    PerCpuHashMap::with_max_entries(FAST_COUNTERS_MAP_CAPACITY, 0);
+
+#[cfg(feature = "conntrack-kfunc")]
+#[map(name = "lanspeed_seen_conns")]
+pub static LANSPEED_SEEN_CONNS: LruHashMap<LanspeedConnKey, u8> =
+    LruHashMap::with_max_entries(MAX_CONN_TUPLES, 0);
+
+#[map(name = "lanspeed_packet_prefix")]
+static LANSPEED_PACKET_PREFIX: PerCpuArray<PacketPrefix> = PerCpuArray::with_max_entries(1, 0);
+
+pub fn account_frame(ctx: TcContext, direction: u8, action: i32) -> i32 {
+    let frame_len = ctx.len();
+    if frame_len < ETHERNET_HEADER_LEN as u32 {
+        return action;
+    }
+    let Some(prefix) = LANSPEED_PACKET_PREFIX.get_ptr_mut(0) else {
+        return action;
+    };
+    let prefix = unsafe { &mut *prefix };
+    let prefix_ptr = prefix.bytes.as_mut_ptr();
+    let prefix_len = frame_len.min(PACKET_PREFIX_LEN as u32);
+    if !load_packet_prefix(&ctx, prefix_ptr, prefix_len) {
+        return action;
+    }
+    let ethernet = unsafe { loaded_packet_prefix(prefix, prefix_len) };
+
+    let mac = if direction == DIR_TX {
+        [
+            ethernet[6],
+            ethernet[7],
+            ethernet[8],
+            ethernet[9],
+            ethernet[10],
+            ethernet[11],
+        ]
+    } else {
+        [
+            ethernet[0],
+            ethernet[1],
+            ethernet[2],
+            ethernet[3],
+            ethernet[4],
+            ethernet[5],
+        ]
+    };
+    if !is_valid_client_mac(mac) {
+        return action;
+    }
+
+    let skb = ctx.skb.skb;
+    let ifindex = unsafe { (*skb).ifindex };
+    let lan_local = route_addresses(ethernet)
+        .is_some_and(|addresses| is_lan_local_frame(&ctx, addresses, direction, ifindex));
+    let wire_len = unsafe { (*skb).wire_len };
+    let gso_segs = unsafe { (*skb).gso_segs };
+    let gro_prefix_loaded = direction == DIR_TX && gso_segs > 1;
+    let ingress_header_len = if gro_prefix_loaded {
+        gro_repeated_header_len(unsafe { loaded_packet_prefix(prefix, prefix_len) })
+    } else {
+        None
+    };
+    let accounting =
+        tc_frame_accounting(direction, frame_len, wire_len, gso_segs, ingress_header_len);
+    let key = LanspeedKey {
+        ifindex,
+        vlan_or_zone: vlan_zone(unsafe { (*skb).vlan_tci } as u16),
+        direction,
+        reserved: 0,
+        mac,
+        padding: [0; 2],
+    };
+    let now = unsafe { bpf_ktime_get_ns() };
+    unsafe {
+        update_fast_counter_in(
+            &LANSPEED_FAST_COUNTERS,
+            &key,
+            accounting.bytes,
+            accounting.packets,
+            now,
+        );
+        if !lan_local {
+            update_fast_counter_in(
+                &LANSPEED_ROUTED_FAST_COUNTERS,
+                &key,
+                accounting.bytes,
+                accounting.packets,
+                now,
+            );
+        }
+    }
+
+    let counters = match LANSPEED_CLIENTS.get_ptr_mut(&key) {
+        Some(counters) => {
+            unsafe { add_packet(counters, accounting.bytes, accounting.packets, now) };
+            counters
+        }
+        None => {
+            let initial = LanspeedCounters {
+                bytes: accounting.bytes,
+                packets: accounting.packets,
+                last_seen: now,
+                tcp_conns: 0,
+                udp_conns: 0,
+            };
+            let inserted = LANSPEED_CLIENTS
+                .insert(&key, &initial, BPF_NOEXIST as u64)
+                .is_ok();
+            let Some(counters) = LANSPEED_CLIENTS.get_ptr_mut(&key) else {
+                return action;
+            };
+            if !inserted {
+                unsafe { add_packet(counters, accounting.bytes, accounting.packets, now) };
+            }
+            counters
+        }
+    };
+
+    #[cfg(not(feature = "conntrack-kfunc"))]
+    let _ = counters;
+
+    #[cfg(feature = "conntrack-kfunc")]
+    if direction == DIR_TX {
+        let mut prefix_loaded = gro_prefix_loaded;
+        if !prefix_loaded {
+            prefix_loaded = load_packet_prefix(&ctx, prefix_ptr, prefix_len);
+        }
+        if prefix_loaded {
+            let loaded_prefix = unsafe { loaded_packet_prefix(prefix, prefix_len) };
+            try_count_connection(&ctx, counters, mac, loaded_prefix, frame_len as usize);
+        }
+    }
+
+    action
+}
+
+#[inline(always)]
+fn load_packet_prefix(ctx: &TcContext, prefix: *mut u8, prefix_len: u32) -> bool {
+    unsafe { bpf_skb_load_bytes(ctx.skb.skb.cast(), 0, prefix.cast(), prefix_len) == 0 }
+}
+
+#[inline(always)]
+unsafe fn loaded_packet_prefix(prefix: &PacketPrefix, prefix_len: u32) -> &[u8] {
+    // SAFETY: callers only reach this helper after bpf_skb_load_bytes has
+    // successfully initialized exactly the returned prefix range.
+    unsafe { slice::from_raw_parts(prefix.bytes.as_ptr(), prefix_len as usize) }
+}
+
+unsafe fn add_packet(counters: *mut LanspeedCounters, bytes: u64, packets: u64, now: u64) {
+    let bytes_counter = unsafe { addr_of_mut!((*counters).bytes) };
+    let packets_counter = unsafe { addr_of_mut!((*counters).packets) };
+    unsafe {
+        add_u64(bytes_counter, bytes);
+        add_u64(packets_counter, packets);
+        addr_of_mut!((*counters).last_seen).write_volatile(now);
+    }
+}
+
+#[inline(always)]
+unsafe fn update_fast_counter_in(
+    counters: &PerCpuHashMap<LanspeedKey, FastCounterValue>,
+    key: &LanspeedKey,
+    bytes: u64,
+    packets: u64,
+    now: u64,
+) {
+    let Some(counter) = counters.get_ptr_mut(key) else {
+        let initial = FastCounterValue {
+            abi_version: FAST_COUNTER_ABI_VERSION,
+            reset_generation: 1,
+            seq: 2,
+            bytes,
+            packets,
+            last_seen_ns: now,
+        };
+        let _ = counters.insert(key, &initial, BPF_NOEXIST as u64);
+        return;
+    };
+
+    // A new PerCPU hash key leaves non-inserting CPU slots zero-initialized.
+    // Initialize such a slot on its first local write and recover stale
+    // metadata under the same odd/even sequence protocol before counting it.
+    let abi_version = addr_of_mut!((*counter).abi_version).read_volatile();
+    let reset_generation = addr_of_mut!((*counter).reset_generation).read_volatile();
+    let sequence_value = addr_of_mut!((*counter).seq).read_volatile();
+    if abi_version != FAST_COUNTER_ABI_VERSION || reset_generation == 0 || sequence_value & 1 != 0 {
+        addr_of_mut!((*counter).seq).write_volatile(1);
+        addr_of_mut!((*counter).abi_version).write_volatile(FAST_COUNTER_ABI_VERSION);
+        addr_of_mut!((*counter).reset_generation).write_volatile(1);
+        addr_of_mut!((*counter).bytes).write_volatile(bytes);
+        addr_of_mut!((*counter).packets).write_volatile(packets);
+        addr_of_mut!((*counter).last_seen_ns).write_volatile(now);
+        addr_of_mut!((*counter).seq).write_volatile(2);
+        return;
+    }
+
+    // Per-CPU ownership prevents concurrent writers for one map value. The
+    // BPF target only supports the existing relaxed atomic RMW primitive, so
+    // userspace must perform two lookups and accept only one even seq; it never
+    // treats a single copied value as stable.
+    let sequence = addr_of_mut!((*counter).seq);
+    unsafe { crate::atomics::add_u64(sequence, 1) };
+    unsafe {
+        crate::atomics::add_u64(addr_of_mut!((*counter).bytes), bytes);
+        crate::atomics::add_u64(addr_of_mut!((*counter).packets), packets);
+        addr_of_mut!((*counter).last_seen_ns).write_volatile(now);
+    }
+    unsafe { crate::atomics::add_u64(sequence, 1) };
+}
