@@ -1,0 +1,16 @@
+.codegraph/
+.playwright-cli/
+docs/superpowers/
+tower/tower
+.env.local
+*.local.json
+*.log
+**/tower.json
+**/local-share.json
+**/rule-cache/
+*.apk
+*.ipk
+.DS_Store
+*_test.go
+.build/
+__pycache__/
