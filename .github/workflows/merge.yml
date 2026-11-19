@@ -207,7 +207,7 @@ jobs:
             git_clone "https://github.com/gaoyaxuan/luci-app-pushbot" "luci-app-pushbot" || true
             git_clone "https://github.com/nooblk-98/luci-app-netstat" "luci-app-netstat" || true
             git_clone "https://github.com/nooblk-98/luci-theme-noobwrt" "luci-theme-noobwrt" || true
-            #git_clone "https://github.com/qimaoww/luci-app-lanspeed" "luci-app-lanspeed" || true
+            git_clone "https://github.com/qimaoww/luci-app-lanspeed" "luci-app-lanspeed" || true
             git_clone "https://github.com/Natduki/luci-app-sqm-controller" "luci-app-sqm-controller" || true
           ) &
           PID4=$!
@@ -227,6 +227,7 @@ jobs:
             git_clone "https://github.com/LianXia233/luci-app-netmonitor" "luci-app-netmonitor" || true
             git_clone "https://github.com/kenzok8/openwrt-tower" "openwrt-tower" || true
             git_clone "https://github.com/zhouzhouzk/luci-app-netview" "luci-app-netview" || true
+            git_clone " https://github.com/Openwrt-Passwall/openwrt-passwall2" "openwrt-passwall2" || true
           ) &
           PID5=$!
           
