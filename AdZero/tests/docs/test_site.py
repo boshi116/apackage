@@ -1,0 +1,124 @@
+"""Public handbook integrity and deployment boundary checks (standard library)."""
+import importlib.util
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+SITE = REPO / 'docs/site'
+spec = importlib.util.spec_from_file_location('docs_build', SITE / 'build.py')
+builder = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(builder)
+
+
+class Handbook(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.output = Path(self.temp.name)
+        builder.build(self.output)
+
+    def test_version_and_release_match_installer(self):
+        config = json.loads((SITE / 'site.json').read_text(encoding='utf-8'))
+        makefile = (REPO / 'luci-app-adzero/Makefile').read_text(encoding='utf-8')
+        self.assertIn('PKG_VERSION:=' + config['version'], makefile)
+        self.assertEqual(config['release'], 'v' + config['version'])
+        self.assertIn('/download/' + config['release'], (REPO / 'scripts/install.sh').read_text(encoding='utf-8'))
+        body = (self.output / 'installation.html').read_text(encoding='utf-8')
+        self.assertIn('https://raw.githubusercontent.com/slobys/AdZero/main/scripts/install-auto.sh', body)
+        self.assertIn('/releases/tag/' + config['release'], body)
+        self.assertNotIn('$release', body)
+
+    def test_only_public_assets_and_navigation_are_published(self):
+        pages = list(self.output.glob('*.html'))
+        self.assertEqual(len(pages), 13)
+        self.assertEqual([p.name for p in (self.output / 'assets').iterdir()], ['adzero-logo.png'])
+        approved=(REPO / 'docs/images/adzero-logo.png').read_bytes()
+        self.assertEqual((self.output / 'assets/adzero-logo.png').read_bytes(),approved)
+        self.assertEqual((REPO / 'luci-app-adzero/htdocs/luci-static/resources/view/adzero/logo.png').read_bytes(),approved)
+        for file in pages:
+            body = file.read_text(encoding='utf-8')
+            self.assertNotIn('NaiLink 文档', body)
+            self.assertNotIn('基于 daed', body)
+            self.assertNotRegex(body, r'<script[^>]+src="https?://')
+            self.assertNotRegex(body, r'<link[^>]+rel="stylesheet"[^>]+href="https?://')
+            self.assertIn('跳转到正文', body)
+        workflow = (REPO / '.github/workflows/docs.yml').read_text(encoding='utf-8')
+        self.assertIn('path: .build/docs-site', workflow)
+        self.assertNotIn('path: .\n', workflow)
+
+    def test_readme_stays_short_and_install_commands_match_handbook(self):
+        readme = (REPO / 'README.md').read_text(encoding='utf-8')
+        self.assertLessEqual(len(readme.splitlines()), 90, 'README should be beginner-friendly, not an exhaustive handbook')
+        install = (self.output / 'installation.html').read_text(encoding='utf-8')
+        self.assertIn('scripts/install-auto.sh', readme)
+        self.assertIn('scripts/install-auto.sh', install)
+        self.assertEqual(readme.count('```sh'), 1, 'README must show exactly one installation command')
+        self.assertEqual(install.count('<pre><code>'), 1, 'Online installation page must show one installation command')
+        self.assertNotIn('install-arm64-beta.sh -o', readme)
+        self.assertNotIn('install-istoreos-beta.sh -o', readme)
+        self.assertIn('--detect', install)
+        self.assertIn('--check', install)
+        self.assertNotIn('-beta.', install)
+        self.assertIn('同一个正式版', install)
+        self.assertIn('https://slobys.github.io/AdZero/compatibility.html', readme)
+        self.assertNotIn('iStoreOS 进度（尚未发布）', readme)
+
+    def test_public_firmware_table_and_search_are_current(self):
+        matrix = json.loads((REPO / 'docs/compatibility-matrix.json').read_text(encoding='utf-8'))
+        unified = matrix['unified_install']
+        self.assertEqual(unified['firmwares'], ['openwrt', 'immortalwrt', 'istoreos'])
+        self.assertEqual(unified['channel'], 'stable')
+        self.assertEqual(unified['application_formats'], {'ipk':'all', 'apk':'noarch'})
+        page = (self.output / 'compatibility.html').read_text(encoding='utf-8')
+        for family in ['OpenWrt', 'ImmortalWrt', 'iStoreOS']:
+            self.assertIn(family, page)
+        for target in ['x86/64', 'armsr/armv8', 'rockchip/armv8', 'mediatek/filogic']:
+            self.assertIn(target, page)
+        self.assertIn('原生软件包', page)
+        self.assertIn('不代表所有物理设备', page)
+        self.assertNotIn('-beta.', page)
+        search = json.loads((self.output / 'search-index.json').read_text(encoding='utf-8'))
+        self.assertTrue(any(item['url'].startswith('compatibility.html') and 'iStoreOS' in item['text'] for item in search))
+
+    def test_native_vendor_dependencies_remain_revision_and_abi_scoped(self):
+        page = (self.output / 'compatibility.html').read_text(encoding='utf-8')
+        for value in ['2026073111', '2026102312', 'aarch64_cortex-a53', '原生 OPKG/IPK', '原生 APK']:
+            self.assertIn(value, page)
+        auto = (REPO / 'scripts/install-auto.sh').read_text(encoding='utf-8')
+        self.assertNotIn('PIN_ISTOREOS', auto)
+        self.assertNotIn('istoreos:24.10.8:', auto)
+        install = (self.output / 'installation.html').read_text(encoding='utf-8')
+        self.assertIn('原生依赖', install)
+        self.assertIn('旧 Beta', install)
+        self.assertIn('不作为自动更新候选', install)
+        self.assertEqual(install.count('<pre><code>'), 1)
+
+    def test_broken_link_and_anchor_are_rejected(self):
+        file = self.output / 'index.html'
+        original = file.read_text(encoding='utf-8')
+        for broken in ['missing.html', 'rules.html#missing', '../README.md']:
+            file.write_text(original + f'<a href="{broken}">bad</a>', encoding='utf-8')
+            with self.subTest(link=broken), self.assertRaises(ValueError):
+                builder.validate(self.output)
+
+    def test_duplicate_headings_and_invalid_search_are_rejected(self):
+        with self.assertRaises(ValueError):
+            doc = builder.Document()
+            doc.feed('<h2 id="same">A</h2><h2 id="same">B</h2>')
+        (self.output / 'search-index.json').write_text('[{"url":"rules.html#missing"}]', encoding='utf-8')
+        with self.assertRaises(ValueError):
+            builder.validate(self.output)
+
+    def test_chinese_search_and_404_subpath(self):
+        index = json.loads((self.output / 'search-index.json').read_text(encoding='utf-8'))
+        self.assertTrue(any('临时放行' in entry['text'] and entry['url'].startswith('access-control.html') for entry in index))
+        body = (self.output / '404.html').read_text(encoding='utf-8')
+        self.assertIn('<base href="https://slobys.github.io/AdZero/">', body)
+        self.assertIn('页面未找到 · AdZero', body)
+        self.assertNotIn('<aside class="toc"', body)
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -1,0 +1,165 @@
+'use strict';
+// Typed methods, no command or environment arguments exposed to the browser.
+import { connect } from 'ubus';
+import { hostname, controls } from '../../../libexec/adzero/policy-lib.uc';
+import * as fs from 'fs';
+import * as sources from '../../../libexec/adzero/source-lib.uc';
+import * as progress from '../../../libexec/adzero/progress-lib.uc';
+import * as observation from '../../../libexec/adzero/observe-state.uc';
+import * as enhance from '../../../libexec/adzero/dns-enhance-lib.uc';
+const bus = connect();
+function invoke(request, action, args, output) {
+	// Nested asynchronous exec keeps rpcd free to serve NaiLink's local session.
+	return bus.defer('file','exec',{command:'/usr/libexec/adzero/ctl',params:[action,...args]},function(code,result) {
+		let reply = {ok:code == 0 && result?.code == 0};
+		if (reply.ok && output) {
+			try { reply.data = json(result.stdout); } catch(e) { reply.ok = false; }
+		}
+		if (!reply.ok) reply.message = output ? '查询未完成，请确认保护已开启且规则就绪。' : '操作未完成，已保留恢复记录。请重新检测；必要时关闭并恢复。';
+		request.reply(reply);
+	});
+}
+function job(request,action,args) {
+	// Only the local launcher is synchronous: it never downloads, waits on
+	// ctl's lock, or invokes ubus. The detached worker performs all slow work.
+	let quote=s=>"'"+replace(s,/'/g,"'\\''")+"'";
+	let proc=fs.popen(join(' ',map(['/usr/libexec/adzero/job','start',action,...args],quote))+' 2>/dev/null','r');
+	if (proc) {
+		let raw=proc.read('all'),code=proc.close();
+		if (code == 0) try { let data=json(raw); if (match(data.job ?? '',/^[a-f0-9-]{36}$/)) return {ok:true,job:data.job}; } catch(e) {}
+	}
+	return {ok:false,message:'后台任务未能开始，请重新检测。'};
+}
+function domain(request, action, scope) {
+	try {
+		let name = hostname(request.args.domain), args = [name];
+		if (scope) push(args,hostname(request.args.scope));
+		return scope ? job(request,action,args) : invoke(request,action,args,true);
+	} catch(e) { return {ok:false,message:e.message}; }
+}
+function source_id(value) { if (!match(value ?? '',/^[A-Za-z0-9_]{1,80}$/)) die('规则标识无效。');return value; }
+function source_change(r,action) {
+	try {
+		let a=r.args;
+		if (action == 'source-add') {
+			if (a.catalog) {
+				if (!length(filter(sources.catalog,c=>c.id == a.catalog))) die('未知规则库项目。');
+				return job(r,action,[a.catalog,'','','domains']);
+			}
+			return job(r,action,['',sources.title(a.name),sources.url(a.url),sources.format(a.format)]);
+		}
+		let id=source_id(a.id);
+		if (type(a.expected_url) != 'string' || length(a.expected_url) > 2048) die('规则地址已变化，请重新读取。');
+		return job(r,action,action == 'source-toggle' ? [id,a.expected_url,a.enabled ? '1':'0'] : [id,a.expected_url]);
+	} catch(e) { return {ok:false,message:e.message}; }
+}
+function settings(r,control){
+	let path;
+	try{
+		let input=r.args.payload;if(type(input)!='string'||length(input)>100000)die('请求内容无效。');
+		let value=control=='enhance'?json(input):null;
+		let p=control=='enhance'?{before:enhance.config(value.before),after:enhance.config(value.after)}:control?controls(input):sources.plan(input),dir='/tmp/adzero-requests';
+		if(!fs.lstat(dir)&&!fs.mkdir(dir,0700))die('无法准备批量任务。');
+		if(fs.lstat(dir)?.type!='directory'||(fs.stat(dir).mode&0777)!=0700||fs.stat(dir).uid!=0)die('批量任务目录无效。');
+		let id=trim(fs.readfile('/proc/sys/kernel/random/uuid')??'');
+		if(!match(id,/^[a-f0-9-]{36}$/))die('无法创建任务标识。');
+		path=dir+'/'+id;
+		let file=fs.open(path,'wx',0600),raw=sprintf('%J',p);
+		if(!file)die('无法保存批量请求。');
+		let size=file.write(raw),closed=file.close();if(size!=length(raw)||!closed)die('批量请求保存不完整。');
+		let result=job(r,control=='enhance'?'enhance-save':control?'controls-apply':'settings-apply',[path]);
+		if(!result.ok)fs.unlink(path);
+		return result;
+	}catch(e){if(path)fs.unlink(path);return {ok:false,message:e.message};}
+}
+return {adzero:{
+	enhance_status:{call:r=>invoke(r,'enhance-status',[],true)},
+	enhance_save:{args:{payload:''},call:r=>settings(r,'enhance')},
+	dns_test:{call:r=>job(r,'dns-test',[])},
+	stats_reset:{call:r=>bus.defer('file','exec',{command:'/usr/libexec/adzero/observe',params:['reset-stats']},function(code,result){let value={ok:false,message:'清零请求未完成，请稍后重试。'};if(code==0&&result?.code==0)try{value=json(result.stdout);}catch(e){}r.reply(value);})},
+	controls_apply:{args:{payload:''},call:r=>settings(r,true)},
+	observation:{call:r=>{let value=observation.snapshot();delete value.pid;delete value.sample;delete value.generation;delete value.boot;return {ok:true,data:value};}},
+	recent_set:{args:{enabled:true},call:r=>bus.defer('file','exec',{command:'/usr/libexec/adzero/observe',params:[r.args.enabled?'recent-start':'recent-stop']},function(code,result){let value={ok:false,message:'临时记录操作未完成，请稍后重试。'};if(code==0&&result?.code==0)try{value=json(result.stdout);}catch(e){}r.reply(value);})},
+	verification_start:{call:r=>bus.defer('file','exec',{command:'/usr/libexec/adzero/observe',params:['start-test']},function(code,result){
+		let value={ok:false,message:'检测未能开始，请稍后重试。'};
+		if(code==0&&result?.code==0)try{value=json(result.stdout);}catch(e){}
+		r.reply(value);
+	})},
+	update_check:{call:r=>job(r,'update-check',[])},
+	update_start:{args:{version:''},call:r=>{
+		let v=r.args.version;
+		if(type(v)!='string'||!match(v,/^v[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$/))return {ok:false,message:'目标版本无效，请重新检查更新。'};
+		return job(r,'self-upgrade',[v]);
+	}},
+	enable:{call:r=>job(r,'enable',[])},
+	disable:{call:r=>job(r,'disable',[])},
+	refresh:{call:r=>job(r,'refresh',[])},
+	reload:{call:r=>job(r,'reload',[])},
+	routing_on:{call:r=>job(r,'routing-on',[])},
+	routing_off:{call:r=>job(r,'routing-off',[])},
+	source_list:{call:r=>invoke(r,'sources-list',[],true)},
+	source_add:{args:{catalog:'',name:'',url:'',format:'domains'},call:r=>source_change(r,'source-add')},
+	source_toggle:{args:{id:'',expected_url:'',enabled:true},call:r=>source_change(r,'source-toggle')},
+	source_remove:{args:{id:'',expected_url:''},call:r=>source_change(r,'source-remove')},
+	source_refresh:{call:r=>job(r,'source-refresh',[])},
+	source_verify:{call:r=>job(r,'source-verify',[])},
+	settings_apply:{args:{payload:''},call:r=>settings(r)},
+	job_status:{args:{job:''},call:function(r) {
+		let id=r.args.job;
+		if (!match(id ?? '',/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/)) return {ok:false,message:'任务标识无效。'};
+		let path='/tmp/adzero-jobs/'+id;
+		if (!fs.stat(path)) return {ok:false,reason:'not_found',message:'任务记录不存在，设备可能已重启。请重新检测。'};
+		let is_update=trim(fs.readfile(path+'/action',64)??'')=='update-check';
+		let code=fs.readfile(path+'/result');
+		let phase=trim(fs.readfile(path+'/stage')??'queued');
+		let started=int(trim(fs.readfile(path+'/created')??''));
+		let finished=int(trim(fs.readfile(path+'/finished')??'')),now=code!=null&&finished>=started?finished:int(time());
+		let elapsed=started>0?now-started:0;
+		let metadata={stage:index(progress.stages,phase)>=0?phase:'checking',elapsed:elapsed>0?elapsed:0};
+		try{
+			let source=json(fs.readfile(path+'/source',256)??'null');
+			if(type(source)=='object'&&type(source.index)=='int'&&type(source.total)=='int'&&source.index>=1&&source.index<=source.total&&source.total<=30)metadata.source={index:source.index,total:source.total};
+		}catch(e){}
+		let phase_start=int(trim(fs.readfile(path+'/stage_started')??'')),phase_elapsed=now-phase_start;
+		if(phase_start>0&&phase_elapsed>=0)metadata.phase_elapsed=phase_elapsed;
+		if (code == null) {
+			let worker=trim(fs.readfile(path+'/worker')??'');
+			// No process killing or lock cleanup. Detect an interrupted worker
+			// by its exact job argument, rather than merely trusting a reused PID.
+			if(match(worker,/^[1-9][0-9]*$/)&&fs.stat('/proc/self')){
+				let args=split(fs.readfile('/proc/'+worker+'/cmdline')??'','\x00');
+				if(index(args,id)<0){
+					// The worker may have committed its result between our first
+					// read and /proc inspection. Re-read before calling it lost.
+					code=fs.readfile(path+'/result');
+					if(code==null)return {ok:false,pending:false,reason:'interrupted',message:is_update?'更新检查已中断，请重新检查；未执行升级。':progress.messages.interrupted,progress:metadata};
+				}
+			}
+			if(code==null)return {ok:true,pending:true,progress:metadata};
+		}
+		let reason=trim(fs.readfile(path+'/reason')??'');
+		if(is_update){
+			if(int(trim(code))!=0)return {ok:false,pending:false,reason:'update_check_failed',message:'更新检查任务未完成，请稍后重试；未执行升级。',progress:metadata};
+			let file=path+'/update.json',stat=fs.lstat(file);
+			if(stat?.type=='file'&&stat.size<=8192&&(stat.mode&077)==0)try{
+				let update=json(fs.readfile(file));
+				if(type(update)=='object'&&type(update.ok)=='bool')return {ok:true,pending:false,update,progress:metadata};
+			}catch(e){}
+			return {ok:false,pending:false,reason:'unknown',message:'更新检查未返回有效结果，请重新检查。',progress:metadata};
+		}
+		let recovery=trim(fs.readfile(path+'/recovery',128)??'');if(index(['restored','unconfirmed'],recovery)<0)recovery=null;
+		return int(trim(code)) == 0 ? {ok:true,pending:false,progress:metadata} : {ok:false,pending:false,reason:progress.messages[reason]?reason:'unknown',message:progress.message(reason,recovery),...(recovery?{recovery}:{}),progress:metadata};
+	}},
+	lookup:{args:{domain:''},call:r => domain(r,'lookup',false)},
+	allow:{args:{domain:'',scope:''},call:r => domain(r,'allow',true)},
+	temporary:{args:{domain:'',scope:'',seconds:600},call:r=>{
+		try{if(index([600,3600],r.args.seconds)<0)die('请选择 10 分钟或 1 小时。');return job(r,'temporary',[hostname(r.args.domain),hostname(r.args.scope),''+r.args.seconds]);}
+		catch(e){return {ok:false,message:e.message};}
+	}},
+	revoke:{args:{domain:'',scope:''},call:r => domain(r,'revoke',true)},
+	pause:{args:{seconds:0},call:function(r) {
+		if (index([300,900,1800],r.args.seconds) < 0) return {ok:false,message:'请选择 5、15、30 分钟。'};
+		return job(r,'pause',[''+r.args.seconds]);
+	}},
+	resume:{call:r => job(r,'resume',[])}
+}};

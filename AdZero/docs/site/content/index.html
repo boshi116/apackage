@@ -1,0 +1,21 @@
+<div class="callout"><strong>第一次使用 AdZero？</strong><a href="installation.html#install">只需一条安装命令</a>：它会自动检测 OpenWrt、ImmortalWrt 或 iStoreOS，使用同一个正式版本和中文菜单。首次安装保持保护关闭，确认网络正常后再开启过滤。</div>
+<h2 id="start">三步开始使用</h2>
+<ol>
+<li><a href="compatibility.html">确认固件与设备架构</a>：查看三个固件共用的安装条件与依赖范围。</li>
+<li><a href="installation.html#install">一键安装</a>：以 root SSH 运行统一命令，自动选择固件与安装包。</li>
+<li><a href="quick-start.html">开启并验证过滤</a>：选规则、应用，在连接路由器的电脑上做 DNS 效果检测。</li>
+</ol>
+<h2 id="daily">按需求找功能</h2>
+<table><thead><tr><th>我想做什么</th><th>打开哪里</th></tr></thead><tbody>
+<tr><td>核对 OpenWrt、ImmortalWrt、iStoreOS 的版本和 CPU</td><td><a href="compatibility.html">支持的固件</a></td></tr>
+<tr><td>看拦截数、清零、临时暂停</td><td><a href="dashboard.html">运行概览</a></td></tr>
+<tr><td>添加订阅、更新规则、处理网站误拦截</td><td><a href="rules.html">过滤规则</a> · <a href="access-control.html">拦截与放行</a></td></tr>
+<tr><td>修改国内、国外 DNS，测试备用地址</td><td><a href="dns.html">DNS 与分流</a></td></tr>
+<tr><td>为设备添加规则、检查 CNAME 过滤</td><td><a href="enhancements.html">DNS 增强</a></td></tr>
+<tr><td>切换 NaiLink、PassWall、OpenClash、Nikki</td><td><a href="proxies.html">代理兼容与切换</a></td></tr>
+<tr><td>无法联网、安装失败、想卸载</td><td><a href="troubleshooting.html">常见问题</a> · <a href="maintenance.html">备份与卸载</a></td></tr>
+</tbody></table>
+<h2 id="scope">AdZero 是做什么的？</h2>
+<p>AdZero 是装在软路由上的<strong> DNS 域名广告过滤插件</strong>，直接从 LuCI 管理。它用 adblock-fast 处理过滤列表，也可以配合受支持的代理，无需另外登录或安装管理 App。</p>
+<p>它擅长拦广告、追踪域名的解析，不等于浏览器广告扩展：与内容共用域名的视频广告、设备自己的加密 DNS 或绕过路由器的流量，未必能拦截。页面显示的 DNS 请求拦截占比，也不是网页广告拦截率。</p>
+<div class="callout"><strong>发行和测试：</strong>当前正式版本为 v$version，三个固件共用同一入口。软件包安装与隔离测试不代替每台真实设备的 LAN、DNS、代理和恢复验收。</div>

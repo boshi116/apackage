@@ -1,0 +1,28 @@
+{
+  "source_sha256": "0828081417a274d4cb3c211ebc95ed8941ffdabd0215175798ba8a77c50f62db",
+  "core": "v1.19.32",
+  "measurements": [
+    {
+      "mode": "source",
+      "count": 2000000,
+      "bytes": 32888890,
+      "seconds": 36.943,
+      "max_rss_kib": 444996
+    },
+    {
+      "mode": "output",
+      "count": 4000000,
+      "bytes": 102888890,
+      "seconds": 46.175,
+      "max_rss_kib": 931516
+    },
+    {
+      "mode": "mihomo",
+      "count": 4000000,
+      "queries": 16,
+      "seconds": 8.432,
+      "max_rss_kib": 938240
+    }
+  ],
+  "scope": "native ucode and real Mihomo, synthetic domains, loopback only; not router performance"
+}

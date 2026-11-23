@@ -1,0 +1,20 @@
+<h2 id="device">三个固件，共用同一插件</h2>
+<p>正式版本为 <a href="https://github.com/slobys/AdZero/releases/tag/$release">$release</a>。不按 CPU、固件品牌或 Beta 拆分版本；请统一使用<a href="installation.html#install">安装菜单</a>。</p>
+<table><thead><tr><th>固件</th><th>推荐基础</th><th>安装条件</th></tr></thead><tbody>
+<tr><td>OpenWrt</td><td>24.10 / 25.12，带 LuCI</td><td>本机 OPKG 或 APK 能满足插件依赖。</td></tr>
+<tr><td>ImmortalWrt</td><td>24.10 / 25.12，带 LuCI</td><td>使用自己的软件源和 ABI，不混用 OpenWrt 的原生依赖。</td></tr>
+<tr><td>iStoreOS</td><td>24.10 / 25.12，带 LuCI</td><td>使用原厂依赖；缺失项只按精确版本补齐。</td></tr></tbody></table>
+<h2 id="channels">为什么还保留 IPK 和 APK？</h2>
+<p>它们是两种原生软件包格式，不是两个功能版本。插件仅含 shell、ucode、LuCI 与图片资源，IPK 使用 all、APK 使用 noarch；同一格式的插件本体跨三个固件共享。安装器自动选择格式，原生包管理器负责检查运行库与依赖。</p>
+<p>编译过的依赖不能跨 ABI 通用。x86/64、armsr/armv8、rockchip/armv8、mediatek/filogic 等目标使用各自系统的依赖；aarch64_generic 和 aarch64_cortex-a53 也不能仅因同为 ARM64 就混装原生库。</p>
+<h2 id="regular">构建验证基础</h2>
+<p>已有官方 SDK 验证覆盖 OpenWrt 24.10.8、25.12.5、25.12.6，以及 ImmortalWrt 24.10.6、25.12.2 的对应 x86/64 与 ARM64 目标。通用版本不再以固件小版本白名单选择插件本体，而是检查本机实际软件包、依赖求解和冲突。其他旧版本、裁剪固件、第三方魔改源不作无条件兼容承诺。</p>
+<h2 id="istoreos-24108">iStoreOS 原厂依赖补充范围</h2>
+<table><thead><tr><th>固件构建</th><th>目标</th><th>依赖格式</th></tr></thead><tbody>
+<tr><td>iStoreOS 24.10.8，修订号 2026073111</td><td>x86/64、armsr/armv8、rockchip/armv8</td><td>原生 OPKG/IPK，含原厂 ucode-mod-socket</td></tr>
+<tr><td>iStoreOS 25.12.6，修订号 2026102312</td><td>x86/64、armsr/armv8、rockchip/armv8</td><td>原生 APK</td></tr>
+<tr><td>iStoreOS 25.12.6，修订号 2026103017</td><td>rockchip/armv8（官方 R6S、R6XS 镜像）</td><td>原生 APK，离线安装验证</td></tr></tbody></table>
+<p>补充包只在本机缺依赖时使用，安装器自动匹配并校验 SHA-256。其他 iStoreOS 构建若原生源已满足依赖，仍可正常安装同一插件；若不能满足，则安全停止，不借用其他修订号的原生组件。</p>
+<h2 id="evidence">测试与真实设备的边界</h2>
+<p>SDK 编译、原生软件包求解和隔离回归测试分别记录。它们不代表所有物理设备的 LAN、IPv6、各代理组合与回滚路径都经过现场验收。本版本不在你的在线路由器上执行升级、重启或切换代理；首次安装也不会自动接管正在工作的 DNS。</p>
+<p>历史测试包与下载链接保留供恢复追溯；日常安装和更新请使用同一个正式入口，无须选择历史版本。</p>

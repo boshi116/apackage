@@ -1,0 +1,90 @@
+name: iStoreOS ARM64 archived-origin checks
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'scripts/probe_istoreos_arm64.py'
+      - 'scripts/check_native_origins.py'
+      - 'scripts/build_unified_release.py'
+      - 'tests/test_native_origins.py'
+      - 'scripts/prepare_istoreos_source.py'
+      - 'scripts/inspect_istoreos_candidate.py'
+      - 'scripts/build_istoreos_native.py'
+      - 'scripts/inspect_istoreos_arm64_image.py'
+      - 'scripts/check_istoreos_dependencies.py'
+      - 'scripts/check_istoreos_apk_solver.py'
+      - 'scripts/build_istoreos_pilot.py'
+      - 'scripts/check_istoreos_pilot_snapshot.py'
+      - 'scripts/validate_istoreos_readiness.py'
+      - 'scripts/build_istoreos_beta.py'
+      - 'scripts/install_istoreos_beta.sh'
+      - 'scripts/istoreos_pilot_preflight.sh'
+      - 'tests/test_istoreos_arm64.py'
+      - 'tests/test_istoreos_arm64_image.py'
+      - 'tests/test_istoreos_dependencies.py'
+      - 'tests/test_istoreos_apk_solver.py'
+      - 'tests/test_istoreos_pilot.py'
+      - 'tests/test_istoreos_beta.py'
+      - 'docs/RELEASE_ISTOREOS_BETA_0.21.5.md'
+      - 'docs/RELEASE_ISTOREOS_BETA_0.21.5_BETA2.md'
+      - 'docs/RELEASE_ISTOREOS_BETA_0.21.5_BETA3.md'
+      - 'docs/RELEASE_ISTOREOS_BETA_0.21.5_BETA4.md'
+      - 'docs/evidence/istoreos-25.12.6/public-beta-0.21.5-beta2-assets.json'
+      - 'docs/evidence/istoreos-25.12.6/public-beta-0.21.5-beta3-assets.json'
+      - 'docs/evidence/istoreos-25.12.6/public-beta-0.21.5-beta4-assets.json'
+      - 'docs/ISTOREOS_PILOT.md'
+      - 'docs/evidence/istoreos-25.12.6/*readonly-pilot-snapshot.json'
+      - 'docs/evidence/istoreos-25.12.6/*readiness-snapshot.json'
+      - 'docs/evidence/istoreos-25.12.6/r6xs-official-supported-boards.json'
+      - 'docs/evidence/istoreos-25.12.6/arm64-*.json'
+      - 'tests/test_arm64_matrix.py'
+      - 'docs/compatibility-matrix.json'
+      - '.github/workflows/istoreos-arm64.yml'
+permissions:
+  contents: read
+jobs:
+  vendor-profile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [armsr, rockchip-r6xs]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # The historical 2026102312 dependency bytes are immutable. The vendor's
+      # unversioned latest buildinfo URLs now describe a newer weekly image;
+      # app-only PRs must verify the bytes actually reused, not relabel new
+      # vendor buildinfo as the old firmware. Never update or weaken its pins.
+      - name: Verify immutable native dependency origins (not an SDK build)
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          python3 scripts/check_native_origins.py --profile "$PROFILE" > istoreos-arm64-origin-archives.json
+      - name: Audit live pinned firmware-source metadata (explicit read-only audit)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          set -eu
+          python3 scripts/probe_istoreos_arm64.py --profile "$PROFILE" > istoreos-arm64-provenance.json
+          python3 -c 'import json; p=json.load(open("istoreos-arm64-provenance.json")); assert p["sdk_build"] == "not_run" and p["publishable"] is False and p["device_acceptance"] == "not_run"'
+      - name: Validate isolated ARM64 origin/feeds/ABI and non-publication boundaries
+        run: |
+          python3 -m unittest discover -s tests -p test_istoreos_arm64.py -v
+          python3 -m unittest discover -s tests -p test_istoreos_arm64_image.py -v
+          python3 -m unittest discover -s tests -p test_istoreos_dependencies.py -v
+          python3 -m unittest discover -s tests -p test_istoreos_apk_solver.py -v
+          python3 -m unittest discover -s tests -p test_istoreos_pilot.py -v
+          python3 -m unittest discover -s tests -p test_istoreos_beta.py -v
+          python3 -m unittest discover -s tests -p test_arm64_matrix.py -v
+          python3 -m unittest discover -s tests -p test_native_origins.py -v
+      - name: Upload verified archive origins or explicit live audit (no installable APK)
+        uses: actions/upload-artifact@v4
+        with:
+          name: istoreos-arm64-original-metadata-${{ matrix.profile }}
+          path: istoreos-arm64-*.json

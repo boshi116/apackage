@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "status": "candidates_not_device_certified",
+  "checked_on": "2026-10-28",
+  "sdk_verified": [
+    {"firmware":"openwrt", "release":"24.10.8", "target":"x86/64", "arch":"x86_64", "format":"ipk", "sdk_build":"passed", "device_acceptance":"not_run"},
+    {"firmware":"openwrt", "release":"25.12.5", "target":"x86/64", "arch":"x86_64", "format":"apk", "sdk_build":"passed", "device_acceptance":"not_run"},
+    {"firmware":"openwrt", "release":"25.12.5", "target":"rockchip/armv8", "arch":"aarch64_generic", "apk_cpu_alias":"aarch64", "format":"apk", "sdk_build":"passed", "device_acceptance":"not_run"},
+    {"firmware":"immortalwrt", "release":"24.10.6", "target":"x86/64", "arch":"x86_64", "format":"ipk", "sdk_build":"passed", "device_acceptance":"not_run"},
+    {"firmware":"immortalwrt", "release":"25.12.2", "target":"x86/64", "arch":"x86_64", "format":"apk", "sdk_build":"passed", "device_acceptance":"not_run"}
+  ],
+  "arm64_candidates": [
+    {"firmware":"openwrt", "release":"25.12.6", "target":"rockchip/armv8", "arch_expected":"aarch64_generic", "format":"apk", "sdk_archive_sha256":"2a45cbfa7e6cce588d006039205afba03bd242e90d2df4dc442920716a642ce0", "sdk_build":"ci_passed_unreleased", "sdk_evidence":"evidence/arm64-pr10-sdk-builds.json", "device_acceptance":"not_run"},
+    {"firmware":"openwrt", "release":"25.12.6", "target":"mediatek/filogic", "arch_expected":"aarch64_cortex-a53", "format":"apk", "sdk_archive_sha256":"1c04ac47bdfc361d6aab299eb520d570e368013dedcb8d29cf39dc7168ae642e", "sdk_build":"ci_passed_unreleased", "sdk_evidence":"evidence/arm64-pr10-sdk-builds.json", "device_acceptance":"not_run"},
+    {"firmware":"immortalwrt", "release":"25.12.2", "target":"rockchip/armv8", "arch_expected":"aarch64_generic", "format":"apk", "sdk_archive_sha256":"732a18e11ccc2ad603762856d14e1b40f8d0b9bb217c288e7c159b639be30a98", "sdk_build":"ci_passed_unreleased", "sdk_evidence":"evidence/arm64-pr10-sdk-builds.json", "device_acceptance":"not_run"},
+    {"firmware":"immortalwrt", "release":"25.12.2", "target":"mediatek/filogic", "arch_expected":"aarch64_cortex-a53", "format":"apk", "sdk_archive_sha256":"03c688afec12a97ab2d28daa6469a467be18a7d123da6b278002f897de66ef62", "sdk_build":"ci_passed_unreleased", "sdk_evidence":"evidence/arm64-pr10-sdk-builds.json", "device_acceptance":"not_run"},
+    {"firmware":"istoreos", "release":"25.12.6", "revision":"2026102312", "target":"armsr/armv8", "arch_expected":"aarch64_generic", "format":"apk", "vendor_profile":"armsr", "original_firmware_evidence":"evidence/istoreos-25.12.6/arm64-armsr-original-image.json", "sdk_build":"native_apk_offline_solver_passed_unreleased", "native_evidence":"evidence/istoreos-25.12.6/arm64-armsr-native-offline-solver.json", "device_acceptance":"not_run"},
+    {"firmware":"istoreos", "release":"25.12.6", "revision":"2026102312", "target":"rockchip/armv8", "arch_expected":"aarch64_generic", "format":"apk", "vendor_profile":"rockchip-r6xs", "original_firmware_evidence":"evidence/istoreos-25.12.6/arm64-r6xs-original-image.json", "sdk_build":"native_apk_offline_solver_passed_unreleased", "native_evidence":"evidence/istoreos-25.12.6/arm64-r6xs-native-offline-solver.json", "device_acceptance":"not_run"}
+  ],
+  "adapters_implemented": ["nailink", "passwall", "openclash", "nikki"],
+  "firmware": [
+    {"id": "openwrt", "releases": ["24.10.x", "25.12.5", "25.12.6"], "package_formats": ["ipk", "apk"], "sdk_build": "pending", "device_acceptance": "pending"},
+    {"id": "immortalwrt", "releases": ["24.10.6", "25.12.2"], "package_formats": ["ipk", "apk"], "sdk_build": "passed_for_exact_24.10.6_and_25.12.2_x86_only", "device_acceptance": "not_run"},
+    {"id": "istoreos", "releases": ["25.12.6 revision 2026102312 x86/64"], "package_formats": ["apk_observed_official_image_sdk_pending"], "sdk_build": "source_commit_and_feeds_verified_vendor_sdk_not_built", "device_acceptance": "not_run"}
+  ],
+  "architectures": ["x86_64", "i386", "aarch64", "armv7", "mips", "mipsel", "mips64", "riscv64"],
+  "sdk_targets": ["x86/64", "rockchip/armv8", "mediatek/filogic", "ipq40xx/generic", "ramips/mt7621"],
+  "plugins": ["nailink", "passwall", "passwall2", "openclash", "nikki", "none", "unknown_core", "multiple_plugins"],
+  "dns_cases": ["dnsmasq", "multiple_dnsmasq", "smartdns", "unbound", "adguardhome_conflict", "proxy_dns", "fake_ip", "tun", "ebpf", "ipv4", "ipv6", "doh", "dot", "external_dns"],
+  "evidence_levels": ["source_review", "offline_fixture", "sdk_build", "device_install", "client_filtering"],
+  "policy": "Identify the actual package manager, package architecture, dependencies and DNS path. Never infer filtering from a plugin name, firmware release or CPU bitness.",
+  "unified_install": {
+    "release": "v0.23.11",
+    "channel": "stable",
+    "firmwares": [
+      "openwrt",
+      "immortalwrt",
+      "istoreos"
+    ],
+    "application_formats": {
+      "ipk": "all",
+      "apk": "noarch"
+    },
+    "selection": "native_package_manager_and_dependencies",
+    "fresh_install_enabled": false,
+    "upgrade_preserves_switch": true,
+    "legacy_sdk_rows": "historical_build_evidence_not_patch_whitelist",
+    "additional_dependency_validation": [
+      {
+        "firmware": "istoreos",
+        "release": "25.12.6",
+        "revision": "2026103017",
+        "target": "rockchip/armv8",
+        "arch": "aarch64_generic",
+        "format": "apk",
+        "evidence": "evidence/istoreos-25.12.6/rockchip-2026103017-dependencies.json",
+        "device_acceptance": "not_run"
+      }
+    ],
+    "device_acceptance": "not_run_for_this_release"
+  }
+}

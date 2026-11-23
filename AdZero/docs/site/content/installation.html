@@ -1,0 +1,26 @@
+<h2 id="install">一个版本，一条安装命令</h2>
+<p>OpenWrt、ImmortalWrt、iStoreOS 使用同一个正式版 <a href="https://github.com/slobys/AdZero/releases/tag/$release">$release</a>。以 root 登录 SSH 后执行：</p>
+<pre><code>wget -O /tmp/adzero-install-auto.sh https://raw.githubusercontent.com/slobys/AdZero/main/scripts/install-auto.sh &amp;&amp; sh /tmp/adzero-install-auto.sh --menu</code></pre>
+<p>选择 <strong>1：一键安装 / 自动升级</strong>。安装器自动识别本机包管理器，选择共享 IPK 或 APK；不需要选择 CPU、固件专用版或公测渠道。<code>install-auto.sh</code> 是经过摘要校验的入口，最终只执行同一个 <code>install.sh</code>。</p>
+<h2 id="menu">菜单选项</h2>
+<table><thead><tr><th>选项</th><th>作用</th></tr></thead><tbody>
+<tr><td>1</td><td>自动安装或升级；首次不开启保护，升级保留原开关。</td></tr>
+<tr><td>2</td><td>安装或升级，完成后保持保护关闭。</td></tr>
+<tr><td>3</td><td>下载并检查安装包、SHA-256 与原生依赖求解；不安装、不停止保护、不刷新软件源。</td></tr>
+<tr><td>4</td><td>安全卸载：先恢复 AdZero 管理的设置，再移除插件。</td></tr>
+<tr><td>0</td><td>退出，不修改系统。</td></tr></tbody></table>
+<p><code>--detect</code> 只显示本机固件信息，不联网；它不等于依赖检查。<code>--check</code> 执行安装包及依赖预检，会下载临时文件，但不安装和操作 DNS。若本机软件源索引缺失，检查会说明原因；正式安装才会按需刷新本机原有源。</p>
+<h2 id="dependencies">依赖怎么处理？</h2>
+<p>优先沿用已安装的依赖；不替换完整版 tcpdump，不添加其他固件的软件源，不使用强制忽略依赖或覆盖文件。OpenWrt / ImmortalWrt 的缺失依赖由原生源提供。iStoreOS 原厂缺少的组件只使用严格匹配固件版本、修订号、目标与 ABI 的补充包；已安装的原厂组件保持原样。</p>
+<p>依赖计划若要求升级、降级、重装或删除其他已有系统包，安装会停止并保留正在工作的保护。缺失依赖会先准备，成功后才调用旧版控制程序恢复设置。配置和恢复记录备份位于 <code>/etc/adzero-backups/</code>。</p>
+<p>APK 系统按包名下载缺失依赖，再对下载文件执行离线复核。ImmortalWrt 25.12.1 等使用 APK 3.0.5 的系统，请使用 v0.23.11 或更新安装器；旧安装器可能在依赖下载阶段提示无法选择软件包。</p>
+<h2 id="upgrade">从旧版升级</h2>
+<p>重新运行上面相同的命令，选择 1。旧 Beta、ARM64 或 iStoreOS 专用包统一升级到同一个版本，不需要删除旧配置或安装标记。旧版恢复失败、操作锁未释放或真实配置冲突仍会中止升级；不要手动删锁、恢复记录或改固件 ID。</p>
+<h2 id="online">在 LuCI 更新</h2>
+<p>点击 AdZero 标题旁的版本号检查更新。仅提供已正式发布的数字版本；草稿和测试版均不作为自动更新候选。安装前执行相同的包摘要及原生依赖检查。旧版没有更新按钮时，使用上方同一条 SSH 命令。</p>
+<p>从 v0.23.2 起，GitHub API 返回 403／429、超时或元数据不可用时，会读取同一个官方安装入口中的固定版本和 SHA-256，作为后备来源；只解析数据，不执行该入口。下载的正式安装脚本仍须通过摘要和本机依赖预检，安装仍需确认。两处来源都失败时，页面分别显示 HTTP 状态。</p>
+<p>版本检查在后台运行，页面通过短请求读取结果，慢网络不会一直占用同一个 LuCI 请求。刷新后再次打开更新面板会继续读取已保存的检查任务；检查不占用保护开关的操作锁，也不会自动执行升级。</p>
+<p>旧版在线更新遇到接口限制，可重新检查；持续失败时用上方统一 SSH 命令升级一次，即可获得后备检查能力。不要把网络失败当成固件不兼容，也无需提供 GitHub Token、关闭证书校验或改用第三方下载地址。</p>
+<h2 id="after">安装后</h2>
+<ol><li>确认 LuCI、SSH 与原有网络正常。</li><li>进入「服务 → AdZero」，选择过滤规则后开启保护。</li><li>从实际电脑验证广告域名被拦截、正常网站可用；详见<a href="quick-start.html#verify">第一次使用</a>。</li></ol>
+<p>软件包安装、隔离测试通过不等于每台设备的透明代理路径均已实测。请查看<a href="compatibility.html">兼容范围与验证边界</a>；升级正在接管 DNS 的旧版时仍可能发生短暂重载。</p>

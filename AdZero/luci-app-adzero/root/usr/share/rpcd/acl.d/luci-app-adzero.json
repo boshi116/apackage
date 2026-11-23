@@ -1,0 +1,62 @@
+{
+  "luci-app-adzero": {
+    "description": "AdZero status and limited service actions",
+    "read": {
+      "file": {
+        "/usr/libexec/adzero/ctl status": [
+          "exec"
+        ]
+      },
+      "ubus": {
+        "file": [
+          "exec"
+        ],
+        "adzero": [
+          "lookup",
+          "source_list",
+          "job_status",
+          "observation",
+          "enhance_status",
+          "update_check"
+        ]
+      },
+      "uci": [
+        "adzero"
+      ]
+    },
+    "write": {
+      "file": {},
+      "ubus": {
+        "adzero": [
+          "enable",
+          "disable",
+          "refresh",
+          "reload",
+          "routing_on",
+          "routing_off",
+          "allow",
+          "temporary",
+          "revoke",
+          "pause",
+          "resume",
+          "source_add",
+          "source_toggle",
+          "source_remove",
+          "source_refresh",
+          "source_verify",
+          "settings_apply",
+          "verification_start",
+          "recent_set",
+          "stats_reset",
+          "controls_apply",
+          "enhance_save",
+          "dns_test",
+          "update_start"
+        ]
+      },
+      "uci": [
+        "adzero"
+      ]
+    }
+  }
+}

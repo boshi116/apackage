@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.ipk
+*.apk
+*.tar.gz
+*.zip
+dist/
+artifacts/
+.sdk/
+.build/

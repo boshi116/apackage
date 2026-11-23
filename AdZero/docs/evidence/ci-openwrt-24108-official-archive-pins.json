@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "checked_at_utc": "2026-11-03",
+  "scope": "CI-only isolated OpenWrt 24.10.8 x86_64 native runtime fixtures; no production AdZero packages, router or SDK release changed",
+  "firmware": "OpenWrt 24.10.8 x86_64",
+  "immutable_release_archive": "https://archive.openwrt.org/releases/24.10.8/packages/x86_64/",
+  "historical_pin_note": "Release-specific archive URLs can be repacked with unchanged package version. CI pins exact bytes. The timeout package was rechecked against the official Packages.gz index on 2026-11-03; only control SourceDateEpoch changed and its executable payload is byte-identical. The remaining six pinned packages were downloaded and retain their original SHA-256 values.",
+  "packages": [
+    {
+      "feed": "base",
+      "name": "ucode-mod-socket_2025.07.18~3f64c808-r1_x86_64.ipk",
+      "sha256": "4b776b244a346875a399d1b848dd02e8af20e6e2c4d7b4288e1a94f25554b461"
+    },
+    {
+      "feed": "packages",
+      "name": "coreutils-timeout_9.7-r1_x86_64.ipk",
+      "sha256": "a011462f8462400ba6699066821f27ee6ddf6aea75c612087303c1f22de2796e",
+      "official_archive_packages_gz_index_matched": true,
+      "package_control_version": "9.7-r1"
+    },
+    {
+      "feed": "base",
+      "name": "lua_5.1.5-r11_x86_64.ipk",
+      "sha256": "164795e16b225d71e776a5aa584f6b3af239a0012724da63de58dd808f6a3165"
+    },
+    {
+      "feed": "base",
+      "name": "liblua5.1.5_5.1.5-r11_x86_64.ipk",
+      "sha256": "53875655f43c24dc00fe3f94a1a9e15294be48b80ee32d9fd5d6cddc65b01a70"
+    },
+    {
+      "feed": "base",
+      "name": "libpcap1_1.10.5-r2_x86_64.ipk",
+      "sha256": "51c6bc3cc46fa1cd964a3fe7c2cdb283aced09c888bd6e61cc8d0ff0070649a2"
+    },
+    {
+      "feed": "base",
+      "name": "tcpdump-mini_4.99.5-r1_x86_64.ipk",
+      "sha256": "fa88889694215128b26ad3d94e8b05b8c052475b90d45d2b20394668a94d0fb2"
+    },
+    {
+      "feed": "base",
+      "name": "ucode-mod-uloop_2025.07.18~3f64c808-r1_x86_64.ipk",
+      "sha256": "1c0c07ecd7e820b9a70347284d3c26d4d7760e2224f48e5eadee50a6e0030095"
+    }
+  ],
+  "openclash_archive_feeds_looked_up": [
+    "base",
+    "packages"
+  ],
+  "openclash_official_archive_recursive_packages": 15,
+  "openclash_unneeded_ruby_json": false,
+  "physical_device_acceptance": "not_run",
+  "timeout_metadata_repack": {
+    "previous_package_sha256": "8e529e06face73306c0cc66a7c002432643a7aa4697a4609bdf4ee297fbcbb3e",
+    "current_package_sha256": "a011462f8462400ba6699066821f27ee6ddf6aea75c612087303c1f22de2796e",
+    "official_index_sha256_matched": true,
+    "control_change": "SourceDateEpoch:1792564006 ->1793440229",
+    "payload_sha256": "35a450ce0c155cf4be026ff84a0c9f30dc95c938d1231cff64721941ac4d36be",
+    "payload_unchanged": true
+  },
+  "timeout_executable_pin": {
+    "checked_at_utc": "2026-11-06",
+    "scope": "PassWall and DNS pool runtime test fixture only",
+    "package_sha256": "58ce2fed33f50b961aff18a5bef75a32e28aec2c0756262849b5064554a379bf",
+    "archive_packages_gz_sha256": "b4fe81053780727b39a350d3b142cdfabee6f43eb139ffd8aae729e705f5fef",
+    "official_index_sha256_matched": true,
+    "control_change": "SourceDateEpoch:1793440229 ->1793711904",
+    "executable_path": "usr/libexec/timeout-coreutils",
+    "executable_bytes": 45620,
+    "executable_sha256": "35a450ce0c155cf4be026ff84a0c9f30dc95c938d1231cff64721941ac4d36be",
+    "executable_matches_both_previous_archives": true
+  }
+}
