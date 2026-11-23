@@ -1,11 +1,12 @@
 ## 📦 自用包自动更新
 
-- **更新时间**：2026-11-23 15:36:04
-- **更新文件数**：30
+- **更新时间**：2026-11-23 21:25:21
+- **更新文件数**：34
 - **更新插件**：
-  - `AdZero`
-  - `luci-theme-argon`
-  - `openwrt-daede`
+  - `luci-app-quickfile`
+  - `openwrt-honk`
+  - `openwrt-passwall`
+  - `openwrt-passwall2`
 
 ---
 
