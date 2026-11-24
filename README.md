@@ -1,10 +1,11 @@
 ## 📦 自用包自动更新
 
-- **更新时间**：2026-11-24 08:40:09
-- **更新文件数**：6
+- **更新时间**：2026-11-24 13:49:30
+- **更新文件数**：19
 - **更新插件**：
-  - `openwrt-passwall`
-  - `openwrt-passwall2`
+  - `luci-app-quickfile`
+  - `openwrt-daede`
+  - `openwrt-honk`
 
 ---
 
